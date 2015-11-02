@@ -90,9 +90,20 @@ func (c *cache) Get(k interface{}) (interface{}, bool) {
 
   n, ok := c.cache[k]
   if !ok {
-    return nil, ok
+    return nil, false
   }
-  return n.v, ok
+
+  // No need to move anything if its already at the end of the list.
+  if n.k == c.endList.k {
+    return n.v, true
+  }
+
+  c.removeList(k)
+  n.next = nil
+  n.prev = nil
+  c.addList(n)
+
+  return n.v, true
 }
 
 // Set implements Cache.Set().
@@ -104,24 +115,28 @@ func (c *cache) Set(k interface{}, v interface{}) error {
 }
 
 func (c *cache) setNum(k interface{}, v interface{}) error {
-  if len(c.cache)+1 > c.numLimit {
-    c.remove(c.startList.k)
+  // That key already exists, so just do a value replacement.
+  if _, ok := c.cache[k]; ok {
+    c.cache[k].v = v
+    return nil
   }
-  c.add(k, v)
+
+  // Cache limit was hit, so remove the last used item.
+  if len(c.cache)+1 > c.numLimit {
+    removeKey := c.startList.k
+    c.removeList(removeKey)
+    delete(c.cache, removeKey)
+  }
+
+  n := &node{k: k, v: v}
+  c.addList(n)
+  c.cache[k] = n
+
   return nil
 }
 
 // add adds a node to the end of the list.
-func (c *cache) add(k, v interface{}) {
-  n := &node{k: k, v: v}
-
-  // If we already have this key, then remove it before addding the new one to the linked list.
-  if _, ok := c.cache[k]; ok {
-    c.remove(k)
-  }
-
-  c.cache[k] = n
-
+func (c *cache) addList(n *node) {
   // This would indicate our list is empty.
   if c.endList == nil {
     c.startList = n
@@ -140,10 +155,11 @@ func (c *cache) Remove(k interface{}) {
   c.Lock()
   defer c.Unlock()
 
-  c.remove(k)
+  c.removeList(k)
+  delete(c.cache, k)
 }
 
-func (c *cache) remove(k interface{}) {
+func (c *cache) removeList(k interface{}) {
   n, ok := c.cache[k]
   if !ok {
     return
@@ -169,7 +185,6 @@ func (c *cache) remove(k interface{}) {
     c.endList = n.prev
   }
 
-  delete(c.cache, k)
   return
 }
 
