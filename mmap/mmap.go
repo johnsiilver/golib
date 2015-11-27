@@ -1,13 +1,47 @@
 /*
-Package mmap exposes the Unix mmap calls into an easy to use library.  mmap provides a memory caching
-scheme for files on disk that save memory for a process or share between a set of processes. You can read
-more about mmap in the linux man pages.  This package currently only works for Unix based systems.
+Package mmap exposes the Unix mmap calls with helper utilities.  mmap provides a memory caching
+scheme for files on disk that may save memory when shared between processes or save memory when
+doing random access. You can read more about mmap in the linux man pages.  This package currently
+only works for Unix based systems.
+
+The most basic type to use is a Map object.  It can be created as follows:
+  // Create a file to be mmapped or in open a file with os.Open().
+  f, err := ioutil.TempFile("", "")
+  if err != nil {
+         panic(err)
+  }
+
+  // Because we are creating a new file, give it some content as you can't mmap an empty file.
+  _, err = io.WriteString(f, "hello world")
+  if err != nil {
+         panic(err)
+  }
+
+  // Create an mmapped file that can be read, written, and shared between processes.
+  m, err := NewMap(f, Prot(Read), Prot(Write), Flag(Shared))
+  if err != nil {
+    // Do something
+  }
+  defer m.Close()
+
+  // You now have access to all the methods in io.Reader/io.Writer/io.Seeker()/io.ReaderAt/io.Closer.
+  p := make([]byte, 5)
+  _, err := m.Read(p)
+  if err != nil {
+    // Do something
+  }
+
+  // You can access the Map's []byte directly.  However, there is no goroutine mutexes or other protections
+  // that prevent faults (not panic, good old C like faults).
+  fmt.Println(m.Bytes()[5:])
+}
 */
 package mmap
 
 import (
   "fmt"
   "io"
+  "log"
   "os"
   "sync"
   "syscall"
@@ -35,14 +69,21 @@ const (
   Private = syscall.MAP_PRIVATE
 )
 
-// Map represents a mapped file in memory and is based on bytes.Buffer.  Map implements the io.ReadWriteCloser/io.Seeker interfaces. Note that any change to the
-// []byte returned by various methods is changing the underlying memory representation for all users of this mmap data.
+// Map represents a mapped file in memory and implements the io.ReadWriteCloser/io.Seeker/io.ReaderAt interfaces.
+// Note that any change to the []byte returned by various methods is changing the underlying memory representation
+// for all users of this mmap data.  For safety reasons or when using concurrent access, use the built in methods
+// to read and write the data
 type Map interface {
-  io.ReadWriter
+  io.ReadWriteCloser
   io.Seeker
-  io.Closer
+  io.ReaderAt
 
   // Bytes returns the bytes in the map. Modifying this slice modifies the inmemory representation.
+  // This data should only be used as read-only and instead you should use the Write() method that offers
+  // better protections.  Write() will protect you from faults like writing to a read-only mmap or other
+  // errors that cannot be caught via defer/recover. It also protects you from writing data that cannot
+  // be sync'd to disk because the underlying file does not have the capactiy (regardless to what you
+  // set the mmap length to).
   Bytes() []byte
 
   // Len returns the size of the file, which can be larger than the memory mapped area.
@@ -95,6 +136,10 @@ type Option func(m *mmap)
 // Only use the predefined constants.
 func Prot(p int) Option {
   return func(m *mmap) {
+    if p == Write {
+      m.write = true
+    }
+
     if m.prot != -1 {
       m.prot = m.prot | p
       return
@@ -155,8 +200,8 @@ func newMap(f *os.File, opts ...Option) (*mmap, error) {
     return nil, fmt.Errorf("must pass options to set the flag or prot values")
   }
 
-  if f == nil {
-    return nil, fmt.Errorf("f arg cannot be nil")
+  if f == nil && !m.anon{
+    return nil, fmt.Errorf("f arg cannot be nil, anon was %v", m.anon)
   }
 
   var fd uintptr
@@ -164,20 +209,33 @@ func newMap(f *os.File, opts ...Option) (*mmap, error) {
   if m.anon {
     fd = ^uintptr(0)
     m.flags = m.flags | syscall.MAP_ANON
+    if m.len <= 0 {
+      return nil, fmt.Errorf("must use Length() if using Anon() option")
+    }
   }else{
     fd = f.Fd()
+
+    s, err := f.Stat()
+    if err != nil {
+      return nil, err
+    }
+
+    if s.Size() == 0 {
+      return nil, fmt.Errorf("cannot mmap 0 length file")
+    }
+
+    if m.len == -1 {
+      m.len = int(s.Size())
+    }
   }
 
-  s, err := f.Stat()
-  if err != nil {
-    return nil, err
+  var err error
+  if m.anon {
+    m.data, err = syscall.Mmap(-1, 0, m.len, m.prot, m.flags)
+  }else{
+    m.data, err = syscall.Mmap(int(fd), m.offset, m.len, m.prot, m.flags)
   }
 
-  if s.Size() <= 0 && m.anon {
-    return nil, fmt.Errorf("cannot map a zero length anonymous mapping")
-  }
-
-  m.data, err = syscall.Mmap(int(fd), m.offset, int(s.Size()), m.prot, m.flags)
   if err != nil {
     return nil, fmt.Errorf("problem with mmap system call: %q", err)
   }
@@ -192,6 +250,7 @@ type mmap struct {
   anon bool
   data []byte
   ptr int
+  write bool
 
   sync.RWMutex
 }
@@ -210,19 +269,37 @@ func (m *mmap) Len() int {
 }
 
 // Read implements io.Reader.Read().
-func (m *mmap) Read(p []byte) (n int, err error) {
+func (m *mmap) Read(p []byte) (int, error) {
   m.RLock()
   defer m.RUnlock()
 
   if m.ptr >= m.len {
+    log.Println(m.len)
     return 0, io.EOF
   }
 
-  n = copy(p, m.data[m.ptr:])
+  n := copy(p, m.data[m.ptr:])
   m.ptr += n
 
   if n == m.len - m.ptr {
     return n, io.EOF
+  }
+
+  return n, nil
+}
+
+// ReadAt implements ReaderAt.ReadAt().
+func (m *mmap) ReadAt(p []byte, off int64) (n int, err error) {
+  m.RLock()
+  defer m.RUnlock()
+
+  if int(off) >= m.len {
+    return 0, fmt.Errorf("offset is larger than the mmap []byte")
+  }
+
+  n = copy(p, m.data[off:])
+  if n < len(p) {
+    return n, fmt.Errorf("len(p) was greater than mmap[off:]")
   }
   return n, nil
 }
@@ -231,6 +308,9 @@ func (m *mmap) Read(p []byte) (n int, err error) {
 func (m *mmap) Write(p []byte) (n int, err error) {
   m.Lock()
   defer m.Unlock()
+  if !m.write {
+    return 0, fmt.Errorf("cannot write to non-writeable mmap")
+  }
 
   if len(p) > m.len - m.ptr {
     return 0, fmt.Errorf("attempting to write past the end of the mmap'd file")
