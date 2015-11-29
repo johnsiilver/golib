@@ -6,6 +6,8 @@ import (
   "os"
   "path"
   "testing"
+
+  "log"
 )
 
 func TestMap(t *testing.T) {
@@ -218,6 +220,83 @@ func TestReadWrite(t *testing.T) {
   m.Read(b)
   if string(b) != string(up) {
     t.Fatalf("Write(): got %q, want %q", string(b), string(up))
+  }
+}
+
+func TestString(t *testing.T) {
+  const (
+    str0 = "apples and oranges\n"
+    str1 = "kicking it"
+    replace = "kicking ti"
+  )
+
+  f, err := ioutil.TempFile("", "")
+  if err != nil {
+         panic(err)
+  }
+
+  _, err = io.WriteString(f, str0+str1)
+  if err != nil {
+         panic(err)
+  }
+
+  s, err := f.Stat()
+  if err != nil {
+         panic(err)
+  }
+  fPath := path.Join(os.TempDir(), s.Name())
+  t.Log(fPath)
+
+  m, err := NewString(f, Prot(Read), Prot(Write), Flag(Shared))
+  if err != nil {
+    panic(err)
+  }
+
+  // Test we read the first line.
+  str, err := m.ReadLine()
+  if err != nil {
+    t.Fatalf("got err == %q, want err == nil", err)
+  }
+
+  if m.(*stringer).ptr != len(str0) {
+    t.Fatalf("ReadLine() did move pointer to correct position, got %d want %d", m.(*stringer).ptr, len(str0))
+  }
+
+  if str != str0[:len(str0)-1] {
+    t.Fatalf("got %q, want %q", str, str0)
+  }
+
+  // Test we read the second line.
+  str, err = m.ReadLine()
+  if err != io.EOF {
+    t.Fatalf("got err == %q, want err == nil", err, io.EOF)
+  }
+
+  log.Println(str)
+
+  if m.(*stringer).ptr != len(str0) + len(str1) {
+    t.Fatalf("ReadLine() did move pointer to correct position, got %d want %d", m.(*stringer).ptr, len(str0) + len(str1))
+  }
+
+  if str != str1[:len(str1)] {
+    t.Fatalf("got %q, want %q", str, str1)
+  }
+
+  // Make sure it fails if we try to write over the buffer.
+  m.Seek(0,0)
+  m.Seek(int64(m.Len()-len(replace)), 0)
+
+  n, err := m.WriteString(replace)
+  if err != nil {
+    t.Fatalf("Got err == %q, want err == nil", err)
+  }
+
+  if n != len(replace) {
+    t.Fatalf("WriteString() n value: got %d, want %d", n, len(replace))
+  }
+
+  if m.(*stringer).ptr != len(str0 + replace) {
+    t.Fatalf("WriteString() ptr: got %d, want %d", m.(*stringer).ptr, len(str0+replace))
   }
 
 }

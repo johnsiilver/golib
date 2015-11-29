@@ -35,10 +35,14 @@ The most basic type to use is a Map object.  It can be created as follows:
   // that prevent faults (not panic, good old C like faults).
   fmt.Println(m.Bytes()[5:])
 }
+
+In addition it should be noted that because this package exports various types that satisfy io.Read/Writer, you can use
+the bufio pacakge on some of the types.
 */
 package mmap
 
 import (
+  "bufio"
   "fmt"
   "io"
   "log"
@@ -99,17 +103,25 @@ type Map interface {
   Unlock() error
 }
 
-/*
+// String provides methods for working with the mmaped file as a UTF-8 text file and retrieving data as a string.
 type String interface {
-  io.ReadWriter
-  io.Seeker
-  io.Closer
-  ReadFile() ([]string, error)
-  ReadString(delim byte) (line string, err error)
+  // Embedded Map gives access to all Map methods and satisfies io.ReadWriteCloser/io.Seeker/io.ReaderAt.
+  Map
+
+  // Readline returns each line of text, stripped of any trailing end-of-line marker. The returned line may be empty.
+  // The end-of-line marker is one optional carriage return followed by one mandatory newline.
+  // In regular expression notation, it is `\r?\n`. The last non-empty line of input will be returned even if it has no newline.
   ReadLine() (string, error)
-  String() ([]string, error)
+
+  // Write writes the string to the internal data starting at the current offset.  It moves the internal offset pointer.
+  // If the data would go over the file length, no data is written and an error is returned.
+  WriteString(string) (int, error)
+
+  // String() returns the entire mmap'd data as a string.
+  String() string
 }
 
+/*
 type Structured interface {
   io.Closer
   // Marshal attempts to write "t" into the mapped file. This will always be written from the start of the file.
@@ -380,4 +392,58 @@ func (m *mmap) Close() error {
   defer m.RUnlock()
 
   return syscall.Munmap(m.data)
+}
+
+// stringer implements String.
+type stringer struct {
+  *mmap
+}
+
+// NewString is the constructor for String.
+func NewString(f *os.File, opts ...Option) (String, error) {
+  m, err := newMap(f, opts...)
+  if err != nil {
+    return nil, err
+  }
+  return &stringer{m}, nil
+}
+
+// Readline returns each line of text, stripped of any trailing end-of-line marker. The returned line may be empty.
+// The end-of-line marker is one optional carriage return followed by one mandatory newline.
+// In regular expression notation, it is `\r?\n`. The last non-empty line of input will be returned even if it has no newline.
+func (s *stringer) ReadLine() (string, error) {
+  if s.ptr == s.len {
+    return "", io.EOF
+  }
+
+  i, t, _ := bufio.ScanLines(s.data[s.ptr:], false)
+  if i == 0 {
+    i, t, _ = bufio.ScanLines(s.data[s.ptr:], true)
+    if i == 0 {
+      return "", io.EOF
+    }
+  }
+
+  log.Println("advanced: ", i)
+  s.ptr += i
+  if s.ptr == s.len {
+    return string(t), io.EOF
+  }
+  return string(t), nil
+}
+
+// WriteString writes the string to the internal data starting at the current offset.  It moves the internal offset pointer.
+// If the data would go over the file length, no data is written and an error is returned.
+func (s *stringer) WriteString(w string) (int, error) {
+  if len(w) + s.ptr > s.len {
+    return 0, fmt.Errorf("string is longer than the remaining buffer")
+  }
+
+  n, err := s.mmap.Write([]byte(w))
+  return n, err
+}
+
+// String() returns the entire mmap'd data as a string.
+func (s *stringer) String() string {
+  return string(s.data)
 }
