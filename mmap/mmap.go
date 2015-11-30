@@ -34,7 +34,30 @@ The most basic type to use is a Map object.  It can be created as follows:
   // You can access the Map's []byte directly.  However, there is no goroutine mutexes or other protections
   // that prevent faults (not panic, good old C like faults).
   fmt.Println(m.Bytes()[5:])
-}
+
+
+Also included is a String type that is useful if you need to access the data as a text file .
+  m, err := NewString(f, Prot(Read), Prot(Write), Flag(Shared))
+  if err != nil {
+    // Do something
+  }
+  defer m.Close()
+
+  // Read the next line (including the carriage return)
+  s, err := m.ReadLine()
+  if err != nil {
+      // Do something
+  }
+
+  // You can also seek to a position and write a new line
+  _, err := m.Seek(0, 0)
+  if err != nil {
+    // Do something
+  }
+
+  if err := m.WriteString("yo\n"); err != nil {
+    // Do something
+  }
 
 In addition it should be noted that because this package exports various types that satisfy io.Read/Writer, you can use
 the bufio pacakge on some of the types.
