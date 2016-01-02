@@ -68,7 +68,6 @@ import (
   "bufio"
   "fmt"
   "io"
-  "log"
   "os"
   "sync"
   "syscall"
@@ -309,7 +308,6 @@ func (m *mmap) Read(p []byte) (int, error) {
   defer m.RUnlock()
 
   if m.ptr >= m.len {
-    log.Println(m.len)
     return 0, io.EOF
   }
 
@@ -447,7 +445,6 @@ func (s *stringer) ReadLine() (string, error) {
     }
   }
 
-  log.Println("advanced: ", i)
   s.ptr += i
   if s.ptr == s.len {
     return string(t), io.EOF
