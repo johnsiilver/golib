@@ -4,6 +4,44 @@ In addition the diskmap utilizes mmap on reads to make the random access faster.
 
 Usage is simplistic:
 
+  // Create a new diskmap.
+  p := path.Join(os.TempDir(), nextSuffix())
+  w, err := diskmap.New(p)
+  if err != nil {
+    panic(err)
+  }
+
+  // Write a key/value to the diskmap.
+  if err := w.Write([]byte("hello"), []byte("world")); err != nil {
+    panic(err)
+  }
+
+  // Close the file to writing.
+  w.Close()
+
+  // Open the file for reading.
+  m, err := diskmap.Open(p)
+  if err != nil {
+    panic(err)
+  }
+
+  // Read the value at key "hello".
+  v, err := m.Read([]byte("hello"))
+  if err != nil {
+    panic(err)
+  }
+
+  // Print the value at key "hello".
+  fmt.Println(string(v))
+
+  // Loop through all entries in the map.
+  ctx, cancel := context.WithCancel(context.Background())
+  defer cancel() // Make sure if we end the "range" early we don't leave any leaky goroutines.
+
+  for kv := range m.Range(ctx) {
+    fmt.Printf("key: %s, value: %s", string(kv.Key), string(kv.Value))
+  }
+
 Storage details:
 
 The disk storage is fairly straight forward.  Once all values have been written to disk, an index of the keys
