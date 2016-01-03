@@ -228,7 +228,7 @@ func (w *writer) Close() error {
     }
   }
 
-  // Now that we've written all our data to the end of the file, we can go back to our reserved 16 bytes
+  // Now that we've written all our data to the end of the file, we can go back to our reserved header
   // and write our offset to the index at the beginnign of the file.
   if _, err := w.file.Seek(0, 0); err != nil {
     return fmt.Errorf("could not seek to beginning of the file: %q", err)
