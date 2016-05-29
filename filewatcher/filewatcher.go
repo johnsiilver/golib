@@ -35,6 +35,7 @@ const (
 var registry = map[string]func()Watch{}
 
 // Register registers a filewatcher for files with "marker" using "watcher".
+// This is only used by developers of filewatcher modules.
 func Register(marker string, watcher func()Watch) {
   sp := strings.Split(marker, ":")
   if _, ok := registry[sp[0]]; ok {
