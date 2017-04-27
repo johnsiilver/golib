@@ -5,6 +5,8 @@ package registry
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/golang/glog"
 )
 
 // Registry contains a mapping of URL patterns to http.Handler.
@@ -14,6 +16,7 @@ var Registry = map[string]http.Handler{}
 
 // Register registers a pattern with a handler.
 func Register(pattern string, handler http.Handler) {
+	glog.Infof("Registering pattern %s", pattern)
 	if _, ok := Registry[pattern]; ok {
 		panic(fmt.Sprintf("Cannot register the pattern %q twice", pattern))
 	}
