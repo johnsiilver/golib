@@ -276,22 +276,47 @@ func validateState(state interface{}) error {
 // for any change.
 type subscribers map[string][]chan struct{}
 
+type stateChange struct {
+	old, new interface{}
+	wg       *sync.WaitGroup
+}
+
+// Option is an option for the constructor New().
+type Option func(s *Store)
+
+// WriteBuffer allows a user to change the size of the write buffer in the Store.
+// The write buffer is sized at 100, allowing 100 concurrent Perform() calls
+// that are non-blocking.
+func WriteBuffer(size int) Option {
+	return func(s *Store) {
+		s.scChBuffer = size
+	}
+}
+
 // Store provides access to the single data store for the application.
 // The Store is thread-safe.
 type Store struct {
+	// mod is holds all the state modifiers.
 	mod Modifier
 
 	// smu prevents concurrent AddSubscriber() calls.
-	smu         sync.Mutex
+	smu sync.Mutex
+	// subscribers holds the map of subscribers for different fields.
+	// It stores type subscribers.
 	subscribers atomic.Value
 
-	// pmu prevents concurrent Perform() calls.
-	pmu   sync.Mutex
+	// writeCh is where changes to the state are sent and processed.
+	writeCh chan stateChange
+
+	// scChBuffer is the amount of buffer to give writeCh.
+	scChBuffer int
+	// state is current state of the Store. Its value is a interface{}, so we
+	// don't know the type, but it is guarenteed to be a struct.
 	state atomic.Value
 }
 
 // New is the constructor for Store.
-func New(initialState interface{}, mod Modifier) (*Store, error) {
+func New(initialState interface{}, mod Modifier, opts ...Option) (*Store, error) {
 	if err := validateState(initialState); err != nil {
 		return nil, err
 	}
@@ -299,20 +324,35 @@ func New(initialState interface{}, mod Modifier) (*Store, error) {
 	if mod.updater == nil {
 		return nil, fmt.Errorf("Modfifier must contain some Updaters")
 	}
-	return &Store{mod: mod}, nil
+
+	s := &Store{mod: mod, scChBuffer: 100}
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	s.writeCh = make(chan stateChange, s.scChBuffer)
+	return s, nil
 }
 
-// Perform performs an Action on the Store's state.
-func (s *Store) Perform(a Action) {
-	s.pmu.Lock()
-	s.pmu.Unlock()
-
+// Perform performs an Action on the Store's state. wg will be decremented
+// by 1 to signal the completion of the state change. wg can be nil.
+func (s *Store) Perform(a Action, wg *sync.WaitGroup) {
 	state := s.state.Load()
 	n := s.mod.run(state, a)
 
-	go s.cast(state, n)
+	s.writeCh <- stateChange{old: state, new: n, wg: wg}
+}
 
-	s.state.Store(n)
+// write loops on the writeCh and processes the change.
+func (s *Store) write() {
+	for sc := range s.writeCh {
+		s.state.Store(sc.new)
+		if sc.wg != nil {
+			sc.wg.Done()
+		}
+
+		go s.cast(sc.old, sc.new)
+	}
 }
 
 // Subscribe creates a subscriber to be notified when a field is updated.
