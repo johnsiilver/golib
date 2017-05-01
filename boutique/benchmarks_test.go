@@ -10,6 +10,8 @@ func BenchmarkConcurrentPerform(b *testing.B) {
 	// 6.8 times slower than BenchmarkStaticallyWithMutation
 	// 5.8 times slower than BenchmarkStaticallyWithoutMutation
 
+	// At 500 operations, these both appear to be about 7 times faster.
+
 	initial := MyState{Counter: 0}
 
 	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))

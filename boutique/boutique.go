@@ -269,7 +269,7 @@ type stateChange struct {
 // Container provides access to the single data store for the application.
 // The Container is thread-safe.
 type Container struct {
-	// mod is holds all the state modifiers.
+	// mod holds all the state modifiers.
 	mod Modifier
 
 	// smu, pmu prevents concurrent AddSubscriber() calls.
