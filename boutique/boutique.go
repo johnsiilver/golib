@@ -40,7 +40,7 @@ Design your actions (run the stringer tool on the library):
     return Action{
       Type: ActAddConnection,
       Update: MyState{
-        Connections: map[string]*grpc.Conn{"name": conn},
+        Connections: map[string]*grpc.Conn{name: conn},
       },
     }
   }
@@ -83,17 +83,10 @@ Write your updaters:
 
   // Connection updates our state object for ActAddConnection Actions.
   func Connection (state interface{}, action Action) interface{} {
-    // Always check out to state to make sure it exists.  If it doesn't, then
-    // we need to provide an initial state.
-    if state == nil {
-      state = initial
-    }
+    s := state.(MyState)
 
     switch action.Type {
     case ActAddConnection:
-      // Make a copy of the state struct.
-      s := ShallowCopy(state).(MyState)
-
       // Make a new map that has enough room for the change.
       n := make(map[string]*grpc.Conn, len(s.Connections)+1)
 
@@ -106,55 +99,43 @@ Write your updaters:
 
       // Do the assignment to the new state.
       s.Connections = n
-
-      return s
-    default:
-      // If an Updater does not have an action, you must always return the same state you received.
-      return state
     }
+    return s
   }
 
   // State updates our state object for ActUpdateState Actions.
   func State (state interface{}, action Action) interface{} {
+    s := state.(MyState)
+
     switch action.Type {
     case ActUpdateState:
-      s := ShallowCopy(state).(MyState)
       s.State = action.Update.(MyState).State
-      return s
-    default:
-      // If an Updater does not have an action, you must always return the same state you received.
-      return state
     }
+    return s
   }
 
   // RunTime updates our state object for ActUpdateRunTime Actions.
   func RunTime (state interface{}, action Action) interface{} {
+    s := state.(MyState)
+
     switch action.Type {
     case ActUpdateRunTime:
-      s := ShallowCopy(state).(MyState)
       s.RunTime = action.Update.(MyState).RunTime
-      return s
-    default:
-      // If an Updater does not have an action, you must always return the same state you received.
-      return state
     }
+    return s
   }
 
   // Active updates our state object for ActIncrementActive and ActDecrementActive Actions.
   func Active (state interface{}, action Action) interface{} {
+    s := state.(MyState)
+
     switch action.Type {
     case ActIncrementActive:
-      s := ShallowCopy(state).(MyState)
       s.Active = action.Update.(MyState).Active + 1
-      return s
     case ActDecrementActive:
-      s := ShallowCopy(state).(MyState)
       s.Active = action.Update.(MyState).Active - 1
-      return s
-    default:
-      // If an Updater does not have an action, you must always return the same state you received.
-      return state
     }
+    return s
   }
 
 Consolidate Updaters to a Modifier:
@@ -162,7 +143,7 @@ Consolidate Updaters to a Modifier:
   // mod will be used to run all of our Update objects on any change that is made.
   mod := NewModifier(Connection, State, RunTime, Active)
 
-Create our Store object:
+Create our Container object:
 
   // iniital is the initial state of the state object.
   var initial =  MyState {
@@ -191,8 +172,12 @@ Subscribe to the "State" field when it changes and print out the change:
 Modify the State field:
 
   store.Perform(IncrementActive())
-  store.Perform(UpdateState("excuting"))
+  store.Perform(UpdateState("executing"))
   store.Perform(DecrementActive())
+
+This should output:
+
+  executing
 */
 package boutique
 
@@ -204,7 +189,7 @@ import (
 	"sync/atomic"
 )
 
-// Any is used to indicated to Store.Subscribe() that you want updates for
+// Any is used to indicated to Container.Subscribe() that you want updates for
 // any update to the store, not just a field.
 const Any = "any"
 
@@ -212,7 +197,7 @@ var (
 	public = regexp.MustCompile(`^[A-Z].*`)
 )
 
-// Action represents an action to take on the Store.
+// Action represents an action to take on the Container.
 type Action struct {
 	// Type should be an enumerated constant representing the type of Action.
 	// It is valuable to use http://golang.org/x/tools/cmd/stringer to allow
@@ -281,42 +266,25 @@ type stateChange struct {
 	wg       *sync.WaitGroup
 }
 
-// Option is an option for the constructor New().
-type Option func(s *Store)
-
-// WriteBuffer allows a user to change the size of the write buffer in the Store.
-// The write buffer is sized at 100, allowing 100 concurrent Perform() calls
-// that are non-blocking.
-func WriteBuffer(size int) Option {
-	return func(s *Store) {
-		s.scChBuffer = size
-	}
-}
-
-// Store provides access to the single data store for the application.
-// The Store is thread-safe.
-type Store struct {
+// Container provides access to the single data store for the application.
+// The Container is thread-safe.
+type Container struct {
 	// mod is holds all the state modifiers.
 	mod Modifier
 
-	// smu prevents concurrent AddSubscriber() calls.
-	smu sync.Mutex
+	// smu, pmu prevents concurrent AddSubscriber() calls.
+	smu, pmu sync.Mutex
 	// subscribers holds the map of subscribers for different fields.
 	// It stores type subscribers.
 	subscribers atomic.Value
 
-	// writeCh is where changes to the state are sent and processed.
-	writeCh chan stateChange
-
-	// scChBuffer is the amount of buffer to give writeCh.
-	scChBuffer int
-	// state is current state of the Store. Its value is a interface{}, so we
+	// state is current state of the Container. Its value is a interface{}, so we
 	// don't know the type, but it is guarenteed to be a struct.
 	state atomic.Value
 }
 
-// New is the constructor for Store.
-func New(initialState interface{}, mod Modifier, opts ...Option) (*Store, error) {
+// New is the constructor for Container.
+func New(initialState interface{}, mod Modifier) (*Container, error) {
 	if err := validateState(initialState); err != nil {
 		return nil, err
 	}
@@ -325,45 +293,45 @@ func New(initialState interface{}, mod Modifier, opts ...Option) (*Store, error)
 		return nil, fmt.Errorf("Modfifier must contain some Updaters")
 	}
 
-	s := &Store{mod: mod, scChBuffer: 100}
-	for _, opt := range opts {
-		opt(s)
-	}
+	s := &Container{mod: mod}
+	s.state.Store(initialState)
+	s.subscribers.Store(subscribers{})
 
-	s.writeCh = make(chan stateChange, s.scChBuffer)
 	return s, nil
 }
 
-// Perform performs an Action on the Store's state. wg will be decremented
+// Perform performs an Action on the Container's state. wg will be decremented
 // by 1 to signal the completion of the state change. wg can be nil.
-func (s *Store) Perform(a Action, wg *sync.WaitGroup) {
+func (s *Container) Perform(a Action, wg *sync.WaitGroup) {
+	s.pmu.Lock()
+	defer s.pmu.Unlock()
 	state := s.state.Load()
 	n := s.mod.run(state, a)
 
-	s.writeCh <- stateChange{old: state, new: n, wg: wg}
+	s.write(stateChange{old: state, new: n, wg: wg})
 }
 
 // write loops on the writeCh and processes the change.
-func (s *Store) write() {
-	for sc := range s.writeCh {
-		s.state.Store(sc.new)
-		if sc.wg != nil {
-			sc.wg.Done()
-		}
+func (s *Container) write(sc stateChange) {
+	changed := fieldsChanged(sc.old, sc.new)
 
-		go s.cast(sc.old, sc.new)
+	s.state.Store(sc.new)
+	if sc.wg != nil {
+		sc.wg.Done()
 	}
+
+	go s.cast(changed)
 }
 
 // Subscribe creates a subscriber to be notified when a field is updated.
 // The notification comes over the returned channel.  If the field is set to
 // the Any enumerator, any field change in the state data sends an update.
-func (s *Store) Subscribe(field string) (chan struct{}, error) {
-	if !public.MatchString(field) {
+func (s *Container) Subscribe(field string) (chan struct{}, error) {
+	if field != Any && !public.MatchString(field) {
 		return nil, fmt.Errorf("cannot subscribe to a field that is not public: %s", field)
 	}
 
-	if !fieldExist(field, s.State()) {
+	if field != Any && !fieldExist(field, s.State()) {
 		return nil, fmt.Errorf("cannot subscribe to non-existing field: %s", field)
 	}
 
@@ -382,13 +350,12 @@ func (s *Store) Subscribe(field string) (chan struct{}, error) {
 }
 
 // State returns the current stored state.
-func (s *Store) State() interface{} {
+func (s *Container) State() interface{} {
 	return s.state.Load()
 }
 
 // cast updates subscribers for data changes.
-func (s *Store) cast(a, z interface{}) {
-	changed := fieldsChanged(a, z)
+func (s *Container) cast(changed []string) {
 	sub := s.subscribers.Load().(subscribers)
 	for _, field := range changed {
 		if v, ok := sub[field]; ok {
@@ -442,4 +409,46 @@ func fieldsChanged(a, z interface{}) []string {
 // get a copy of the pointer, not of the underlying value.
 func ShallowCopy(i interface{}) interface{} {
 	return i
+}
+
+// CopyAppendSlice takes a slice, copies the slice into a new slice and appends
+// item to the new slice.  If slice is not actually a slice or item is not the
+// same type as []Type, then this will panic.
+// This is simply a convenience function for copying then appending to a slice.
+// It is faster to do this by hand without the reflection.
+func CopyAppendSlice(slice interface{}, item interface{}) interface{} {
+	i, err := copyAppendSlice(slice, item)
+	if err != nil {
+		panic(err)
+	}
+	return i
+}
+
+// copyAppendSlice implements CopyAppendSlice, but with an error if there is
+// a type mismatch. This makes it easier to test.
+func copyAppendSlice(slice interface{}, item interface{}) (interface{}, error) {
+	t := reflect.TypeOf(slice)
+	if t.Kind() != reflect.Slice {
+		return nil, fmt.Errorf("CopyAppendSlice 'slice' argument was a %s", reflect.TypeOf(slice).Kind())
+	}
+	if t.Elem().Kind() != reflect.TypeOf(item).Kind() {
+		return nil, fmt.Errorf("CopyAppendSlice item is of type %s, but slice is of type %s", t.Elem(), reflect.TypeOf(item).Kind())
+	}
+
+	slicev := reflect.ValueOf(slice)
+	var newcap, newlen int
+	if slicev.Len() == slicev.Cap() {
+		newcap = slicev.Len() + 1
+		newlen = newcap
+	} else {
+		newlen = slicev.Len() + 1
+		newcap = slicev.Cap()
+	}
+
+	ns := reflect.MakeSlice(slicev.Type(), newlen, newcap)
+
+	reflect.Copy(ns, slicev)
+
+	ns.Index(newlen - 1).Set(reflect.ValueOf(item))
+	return ns.Interface(), nil
 }
