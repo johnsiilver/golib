@@ -5,13 +5,29 @@ import (
 	"testing"
 )
 
+/*
+BenchmarkConcurrentPerform-8                     	    3000	    542119 ns/op
+BenchmarkMultifieldPerform-8                     	     500	   3387714 ns/op
+BenchmarkStaticallyWithMutation-8                	    5000	    295028 ns/op
+BenchmarkStaticallyWithoutMutation-8             	    5000	    300650 ns/op
+BenchmarkStaticallyMultifieldWithoutMutation-8   	    1000	   1719393 ns/op
+
+Single field changing with a big lock:
+
+Perform is 1.8 times slower than a version using mutation
+Perform is 1.8 times slower than a version doing copies
+
+If we move up to changing multiple fields simultaneously with a big lock, this becomes:
+
+Perform is 1.9 times slower than a version doing copies
+
+These benchmarks don't take into account the biggest cost in using this module,
+which is calculating the changes for subscribers.
+*/
+
+const iterations = 500
+
 func BenchmarkConcurrentPerform(b *testing.B) {
-	// About .519383694s to do 100k operations.
-	// 6.8 times slower than BenchmarkStaticallyWithMutation
-	// 5.8 times slower than BenchmarkStaticallyWithoutMutation
-
-	// At 500 operations, these both appear to be about 7 times faster.
-
 	initial := MyState{Counter: 0}
 
 	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
@@ -22,7 +38,7 @@ func BenchmarkConcurrentPerform(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		for i := 0; i < 500; i++ {
+		for i := 0; i < iterations; i++ {
 			wg.Add(1)
 			go s.Perform(IncrCounter(), wg)
 		}
@@ -30,14 +46,39 @@ func BenchmarkConcurrentPerform(b *testing.B) {
 	}
 }
 
+func BenchmarkMultifieldPerform(b *testing.B) {
+	initial := MyState{Counter: 0, List: []string{}}
+
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	if err != nil {
+		b.Fatalf("BenchmarkMultifieldConcurrentPerform: %s", err)
+	}
+	wg := &sync.WaitGroup{}
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		for i := 0; i < iterations; i++ {
+			wg.Add(1)
+			//go s.Perform(IncrCounter(), wg)
+			go s.Perform(AppendList("a"), wg)
+		}
+		wg.Wait()
+
+		// We have to reset the store, otherwise the List will just keep growning on
+		// each test and the benchamrk will not stop.
+		b.StopTimer()
+		s.state.Store(MyState{Counter: 0, List: []string{}})
+		b.StartTimer()
+	}
+}
+
 func BenchmarkStaticallyWithMutation(b *testing.B) {
-	// About 0.075974059s to do 100k operations
 	initial := &MyState{Counter: 0}
 	mu := &sync.Mutex{}
 	wg := &sync.WaitGroup{}
 
 	for i := 0; i < b.N; i++ {
-		for i := 0; i < 500; i++ {
+		for i := 0; i < iterations; i++ {
 			wg.Add(1)
 			go func() {
 				mu.Lock()
@@ -51,8 +92,6 @@ func BenchmarkStaticallyWithMutation(b *testing.B) {
 }
 
 func BenchmarkStaticallyWithoutMutation(b *testing.B) {
-	// About 0.088297825 to do 100k operations
-
 	// NOTE: If you make changes here, make sure to use freeze.Object() on MyState
 	// before submitting.  Remove freeze afterwards.
 
@@ -66,7 +105,7 @@ func BenchmarkStaticallyWithoutMutation(b *testing.B) {
 	}
 
 	for i := 0; i < b.N; i++ {
-		for i := 0; i < 500; i++ {
+		for i := 0; i < iterations; i++ {
 			wg.Add(1)
 			go func() {
 				mu.Lock()
@@ -78,5 +117,52 @@ func BenchmarkStaticallyWithoutMutation(b *testing.B) {
 			}()
 		}
 		wg.Wait()
+	}
+}
+
+func BenchmarkStaticallyMultifieldWithoutMutation(b *testing.B) {
+	initial := MyState{Counter: 0, List: []string{}}
+
+	mu := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
+
+	sc := func(ms MyState) MyState {
+		return ms
+	}
+
+	copyAppendSlice := func(s []string, item string) []string {
+		cp := make([]string, len(s)+1)
+		copy(cp, s)
+		cp[len(cp)-1] = item
+		return cp
+	}
+
+	for i := 0; i < b.N; i++ {
+		for i := 0; i < iterations; i++ {
+			wg.Add(2)
+			go func() {
+				mu.Lock()
+				defer mu.Unlock()
+				defer wg.Done()
+				ms := sc(initial)
+				ms.Counter++
+				initial = ms
+			}()
+			go func() {
+				mu.Lock()
+				defer mu.Unlock()
+				defer wg.Done()
+				ms := sc(initial)
+				ms.List = copyAppendSlice(ms.List, "a")
+				initial = ms
+			}()
+		}
+		wg.Wait()
+
+		// We have to reset the store, otherwise the List will just keep growning on
+		// each test and the benchamrk will not stop.
+		b.StopTimer()
+		initial = MyState{Counter: 0, List: []string{}}
+		b.StartTimer()
 	}
 }

@@ -313,14 +313,13 @@ func (s *Container) Perform(a Action, wg *sync.WaitGroup) {
 
 // write loops on the writeCh and processes the change.
 func (s *Container) write(sc stateChange) {
-	changed := fieldsChanged(sc.old, sc.new)
-
 	s.state.Store(sc.new)
 	if sc.wg != nil {
 		sc.wg.Done()
 	}
-
-	go s.cast(changed)
+	if len(s.subscribers.Load().(subscribers)) > 0 {
+		go s.cast(sc.old, sc.new)
+	}
 }
 
 // Subscribe creates a subscriber to be notified when a field is updated.
@@ -355,7 +354,9 @@ func (s *Container) State() interface{} {
 }
 
 // cast updates subscribers for data changes.
-func (s *Container) cast(changed []string) {
+func (s *Container) cast(old, newer interface{}) {
+	changed := fieldsChanged(old, newer)
+
 	sub := s.subscribers.Load().(subscribers)
 	for _, field := range changed {
 		if v, ok := sub[field]; ok {
