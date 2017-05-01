@@ -48,7 +48,7 @@ func Status(s string) Action {
 }
 
 // ChangeList replaces the items in the list with l.
-func AppendList(item string, s *Container) Action {
+func AppendList(item string) Action {
 	return Action{
 		Type:   appendList,
 		Update: item,
@@ -277,7 +277,7 @@ func subscribeSignalsCorrectly(t *testing.T) {
 		<-countDone // For Any
 
 		if i%2 == 0 {
-			s.Perform(AppendList("a", s), nil)
+			s.Perform(AppendList("a"), nil)
 			<-countDone
 			<-countDone // For Any
 		}
@@ -351,7 +351,7 @@ func TestPerform(t *testing.T) {
 
 		wg.Add(1)
 		list = append(list, "a")
-		go s.Perform(AppendList("a", s), wg)
+		go s.Perform(AppendList("a"), wg)
 	}
 
 	wg.Wait()
