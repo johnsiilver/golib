@@ -248,7 +248,7 @@ func subscribeSignalsCorrectly(t *testing.T) {
 
 	mu := &sync.Mutex{}
 	count := counters{}
-	countDone := make(chan struct{}, 1)
+	countDone := make(chan Signal, 1)
 	go func() {
 		for {
 			select {
@@ -265,7 +265,7 @@ func subscribeSignalsCorrectly(t *testing.T) {
 				count.any++
 				mu.Unlock()
 			}
-			countDone <- struct{}{}
+			countDone <- Signal{}
 		}
 	}()
 

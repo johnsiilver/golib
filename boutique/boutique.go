@@ -1,9 +1,58 @@
 /*
-Package boutique is a single state store for immutable objects inspired by flux
-and redux. This allows for fast transforms and notifications of changes from a
-single object.
+Package boutique provides an immutable state storage with subscriptions to
+changes in the store. It is intended to be a single storage solution for a
+service.  The design has its origins in Flux and Redux.
 
-Design your state object, which must be a struct (not a *struct):
+Features and Drawbacks
+
+Features:
+
+ * Immutable data does not require locking outside the store.
+ * Subscribing to individual field changes are simple.
+ * Data locking is handled by the Container.
+
+Drawbacks:
+
+ * You are giving up static type checks on compile.
+ * Internal reflection adds about 1.8x overhead.
+ * Must be careful to not mutate data.
+
+Immutability
+
+When we say immutable, we mean that everything gets copied, as Go
+does not have immutable objects or types other than strings. This means every
+update to a pointer or reference type (map, dict, slice) must make a copy of the
+data before changing it, not a mutation.  Because of modern processors, this
+copying is quite fast.
+
+Usage structure
+
+Boutique provides storage that is best designed in a modular method:
+
+  └── storage
+    ├── storage.go
+    ├── actions
+    │   └── actions.go
+    └── updaters
+        └── updaters.go
+
+The files are best organized by using them as follows:
+
+  storage.go - Holds the store object
+  actions.go - Holds the actions that will be used by the updaters
+  updaters.go - Holds all the actions that change the store's data
+
+
+  Note: These are all simply suggestions, you can combine this in a single file or name the files whatever you wish.
+
+Example
+
+Below is an exmple of an application state stored in Boutique.
+
+Design your state object
+
+The state object holds all of your state. The only rule for a state object is that
+it must be a struct (not to be confused with a *struct).
 
   // MyState is a state object for a fictitious service. We are tracking
   // connections to other services, the application's state, when we completed
@@ -24,14 +73,31 @@ Design your state object, which must be a struct (not a *struct):
     Active int
   }
 
-Design your actions (run the stringer tool on the library):
+Design your Actions
 
+Actions signal the type of change you want to make to a field in the Container.
+It consists of a two fields:
+
+  Type: The type of change that is occurring, an int enum.
+  Update: An optional field that can store any data used in the change.
+
+Below is a set of functions that return an Action object.
+
+  // The following are enumerators that refer to Action.Type that indicate what type
+  // of action we are doing.
+  // Note: Run the go stringer tool on the library for better output of these constants.
   const (
+    // ActUnknown indicates this is not an Action we understand.
     ActUnknown = iota
+    // ActAddConnection adds a GRPC connection.
     ActAddConnection
+    // ActUpdateState updates the state of our application.
     ActUpdateState
+    // ActUpdateRunTime updates Lastrun to indicate when the last time the application ran.
     ActUpdateRunTime
+    // ActIncrementActive increments our Active counter.
     ActIncrementActive
+    // ActDecrementActive decrements our Active counter.
     ActDecrementActive
   )
 
@@ -39,9 +105,7 @@ Design your actions (run the stringer tool on the library):
   func AddConnection(name string, conn *grpc.Conn) Action {
     return Action{
       Type: ActAddConnection,
-      Update: MyState{
-        Connections: map[string]*grpc.Conn{name: conn},
-      },
+      Update: map[string]*grpc.Conn{name: conn}
     }
   }
 
@@ -49,9 +113,7 @@ Design your actions (run the stringer tool on the library):
   func UpdateState(state string) Action {
     return Action{
       Type: ActUpdateState,
-      Update: MyState{
-        State: state,
-      },
+      Update: state,
     }
   }
 
@@ -59,9 +121,7 @@ Design your actions (run the stringer tool on the library):
   func UpdateRunTime(t time.Time) Action {
     return Action{
       Type: ActUpdateRunTime,
-      Update: MyState{
-        LastRun: t,
-      },
+      Update: t,
     }
   }
 
@@ -79,29 +139,11 @@ Design your actions (run the stringer tool on the library):
     }
   }
 
-Write your updaters:
+Write your Updaters
 
-  // Connection updates our state object for ActAddConnection Actions.
-  func Connection (state interface{}, action Action) interface{} {
-    s := state.(MyState)
-
-    switch action.Type {
-    case ActAddConnection:
-      // Make a new map that has enough room for the change.
-      n := make(map[string]*grpc.Conn, len(s.Connections)+1)
-
-      // Copy the existing map data and the new data into the new map.
-      for _, m := range []map[string]*grpc.Conn{action.Update.(MyState).Connections, state.(MyState).Connections} {
-        for k, v := range m {
-          n[k] = v
-        }
-      }
-
-      // Do the assignment to the new state.
-      s.Connections = n
-    }
-    return s
-  }
+Updaters are run against a copy of the current state and an Action and should
+return the newly modified state. If the state is not modified by the Updater,
+it must return the state object it received.
 
   // State updates our state object for ActUpdateState Actions.
   func State (state interface{}, action Action) interface{} {
@@ -109,7 +151,7 @@ Write your updaters:
 
     switch action.Type {
     case ActUpdateState:
-      s.State = action.Update.(MyState).State
+      s.State = action.Update.(string)
     }
     return s
   }
@@ -120,7 +162,7 @@ Write your updaters:
 
     switch action.Type {
     case ActUpdateRunTime:
-      s.RunTime = action.Update.(MyState).RunTime
+      s.RunTime = action.Update.RunTime.(time.Time)
     }
     return s
   }
@@ -131,14 +173,43 @@ Write your updaters:
 
     switch action.Type {
     case ActIncrementActive:
-      s.Active = action.Update.(MyState).Active + 1
+      s.Active++
     case ActDecrementActive:
-      s.Active = action.Update.(MyState).Active - 1
+      s.Active--
     }
     return s
   }
 
-Consolidate Updaters to a Modifier:
+  // Connection updates our state object for ActAddConnection Actions.
+  func Connection (state interface{}, action Action) interface{} {
+    s := state.(MyState)
+
+    switch action.Type {
+    case ActAddConnection:
+      // Because a map is a reference type, we must copy its values to a new map
+      // and modify the new map.
+      // Make a new map that has enough room for the change.
+      n := make(map[string]*grpc.Conn, len(s.Connections)+1)
+
+      // Copy the existing map into the new map.
+      for k, v := range s.Connections {
+        n[k] = v
+      }
+
+      // Copy the new value into the new map. Assume no duplicate keys.
+      for k, v := range action.Update.(map[string]*grpc.Conn) {
+        n[k] = v
+      }
+
+      // Do the assignment to the new state.
+      s.Connections = n
+    }
+    return s
+  }
+
+Consolidate Updaters to a Modifier
+
+A Modifier handles consolidating your Updaters for the Container.
 
   // mod will be used to run all of our Update objects on any change that is made.
   mod := NewModifier(Connection, State, RunTime, Active)
@@ -156,7 +227,11 @@ Create our Container object:
     // Do something
   }
 
-Subscribe to the "State" field when it changes and print out the change:
+Subscribe to changes
+
+Below we are subscriging to the "State" field when it changes and print out the change.
+There is no guarenetee that you will receive all update messages, but when pulling from
+the subscription channel, we guarenetee that it will be for the latest change.
 
   sub, err := store.Subscribe("State")
   if err != nil {
@@ -169,15 +244,29 @@ Subscribe to the "State" field when it changes and print out the change:
     }
   }()
 
-Modify the State field:
+Modify the state
 
-  store.Perform(IncrementActive())
-  store.Perform(UpdateState("executing"))
-  store.Perform(DecrementActive())
+The next code increments our counter, and waits for all changes.
+
+  wg := &sync.WaitGroup{}
+  go store.Perform(IncrementActive(), wg)
+  go store.Perform(UpdateState("executing"), wg)
+  go store.Perform(DecrementActive(), wg)
+
+  wg.Wait()
 
 This should output:
 
   executing
+
+Retrieve the current state
+
+It is safe to do read operations on this state object at any time without a lock.
+However, you should never edit this object. Modifications should only happen via Container.Process().
+
+  state  = store.Store().(MyState)
+  fmt.Println(state.State)
+  fmt.Println(state.Active)
 */
 package boutique
 
@@ -197,6 +286,10 @@ var (
 	public = regexp.MustCompile(`^[A-Z].*`)
 )
 
+// Signal is used to signal upstream subscribers that a field in the Container.Store
+// has changed.
+type Signal struct{}
+
 // Action represents an action to take on the Container.
 type Action struct {
 	// Type should be an enumerated constant representing the type of Action.
@@ -214,7 +307,6 @@ type Action struct {
 // work on a copy only. If you are changing a reference type contained in
 // state, you must make a copy of that reference first and then manipulate
 // the copy, storing it in the new state object.
-// If that object requires a deepcopy, use https://github.com/mohae/deepcopy .
 type Updater func(state interface{}, action Action) interface{}
 
 // Modifier provides the internals the ability to use the Updaters.
@@ -259,7 +351,7 @@ func validateState(state interface{}) error {
 // subscribers holds a mapping of field names to channels that will receive
 // an update when the field name changes. A special field "any" will be updated
 // for any change.
-type subscribers map[string][]chan struct{}
+type subscribers map[string][]chan Signal
 
 type stateChange struct {
 	old, new interface{}
@@ -283,7 +375,9 @@ type Container struct {
 	state atomic.Value
 }
 
-// New is the constructor for Container.
+// New is the constructor for Container. initialState should be a struct that is
+// used for application's state. All Updaters in mod must return the same struct
+// that initialState contains or you will receive a panic.
 func New(initialState interface{}, mod Modifier) (*Container, error) {
 	if err := validateState(initialState); err != nil {
 		return nil, err
@@ -325,7 +419,7 @@ func (s *Container) write(sc stateChange) {
 // Subscribe creates a subscriber to be notified when a field is updated.
 // The notification comes over the returned channel.  If the field is set to
 // the Any enumerator, any field change in the state data sends an update.
-func (s *Container) Subscribe(field string) (chan struct{}, error) {
+func (s *Container) Subscribe(field string) (chan Signal, error) {
 	if field != Any && !public.MatchString(field) {
 		return nil, fmt.Errorf("cannot subscribe to a field that is not public: %s", field)
 	}
@@ -334,7 +428,7 @@ func (s *Container) Subscribe(field string) (chan struct{}, error) {
 		return nil, fmt.Errorf("cannot subscribe to non-existing field: %s", field)
 	}
 
-	ch := make(chan struct{}, 1)
+	ch := make(chan Signal, 1)
 
 	s.smu.Lock()
 	defer s.smu.Unlock()
@@ -343,7 +437,7 @@ func (s *Container) Subscribe(field string) (chan struct{}, error) {
 	if v, ok := subs[field]; ok {
 		subs[field] = append(v, ch)
 	} else {
-		subs[field] = []chan struct{}{ch}
+		subs[field] = []chan Signal{ch}
 	}
 	return ch, nil
 }
@@ -372,9 +466,9 @@ func (s *Container) cast(old, newer interface{}) {
 
 // signal sends an empty struct as a signal on a channel. If the channel is
 // blocked, the signal is not sent.
-func signal(ch chan struct{}) {
+func signal(ch chan Signal) {
 	select {
-	case ch <- struct{}{}:
+	case ch <- Signal{}:
 		// Do nothing
 	default:
 		// Do nothing
