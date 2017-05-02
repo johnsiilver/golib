@@ -212,6 +212,7 @@ type counters struct {
 func TestSubscribe(t *testing.T) {
 	subscribeSignalsCorrectly(t)
 	signalsDontBlock(t)
+	cancelWorks(t)
 }
 
 func subscribeSignalsCorrectly(t *testing.T) {
@@ -228,20 +229,20 @@ func subscribeSignalsCorrectly(t *testing.T) {
 		t.Fatalf("TestPerform: %s", err)
 	}
 
-	sch, err := s.Subscribe("Status")
+	sch, _, err := s.Subscribe("Status")
 	if err != nil {
 		t.Fatalf("TestPerform: %s", err)
 	}
-	lch, err := s.Subscribe("List")
+	lch, _, err := s.Subscribe("List")
 	if err != nil {
 		t.Fatalf("TestPerform: %s", err)
 	}
-	ach, err := s.Subscribe(Any)
+	ach, _, err := s.Subscribe(Any)
 	if err != nil {
 		t.Fatalf("TestPerform: %s", err)
 	}
 
-	_, err = s.Subscribe("private")
+	_, _, err = s.Subscribe("private")
 	if err == nil {
 		t.Errorf("TestPerform: s.Subcribe(\"private\"): err == nil, want error != nil")
 	}
@@ -302,12 +303,12 @@ func signalsDontBlock(t *testing.T) {
 
 	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
 	if err != nil {
-		t.Fatalf("TestPerform: %s", err)
+		t.Fatalf("signalsDontBlock: %s", err)
 	}
 
-	ch, err := s.Subscribe("Counter")
+	ch, _, err := s.Subscribe("Counter")
 	if err != nil {
-		t.Fatalf("TestPerform: %s", err)
+		t.Fatalf("signalsDontBlock: %s", err)
 	}
 
 	for i := 0; i < 100; i++ {
@@ -321,6 +322,83 @@ func signalsDontBlock(t *testing.T) {
 	case <-ch:
 		t.Errorf("signalsDontBlock: got <-ch had something on it, want <-ch to block")
 	default:
+	}
+}
+
+func cancelWorks(t *testing.T) {
+	initial := MyState{Counter: 0}
+
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	if err != nil {
+		t.Fatalf("cancelWorks: %s", err)
+	}
+
+	tests := []struct {
+		desc          string
+		subscriptions int
+		keyExist      bool
+	}{
+		{
+			desc:          "1 subscriber",
+			subscriptions: 1,
+			keyExist:      false,
+		},
+		{
+			desc:          "2 subscribers",
+			subscriptions: 2,
+			keyExist:      true,
+		},
+	}
+
+	for _, test := range tests {
+		var (
+			ch     chan Signal
+			cancel CancelFunc
+			err    error
+		)
+
+		for i := 0; i < test.subscriptions; i++ {
+			// We only want to keep the last set of these.
+			ch, cancel, err = s.Subscribe("Counter")
+			if err != nil {
+				t.Fatalf("cancelWorks: test %s: %s", test.desc, err)
+			}
+		}
+
+		s.Perform(IncrCounter(), nil)
+
+		sawBroadcast := make(chan Signal, 10)
+		chClosed := make(chan Signal)
+		go func() {
+			defer close(chClosed)
+			for _ = range ch {
+				sawBroadcast <- Signal{}
+			}
+		}()
+
+		select {
+		case <-sawBroadcast:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("cancelWorks: test %s: did not see anything on the subscription channel", test.desc)
+		}
+
+		cancel()
+
+		s.Perform(IncrCounter(), nil)
+
+		select {
+		case <-chClosed:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("cancelWorks: test %s: did not see the channel close", test.desc)
+		}
+
+		_, ok := s.subscribers["Counter"]
+		if test.keyExist && !ok {
+			t.Fatalf("cancelWorks, test %s: expected to see the key in subscribers, but didn't", test.desc)
+		}
+		if !test.keyExist && ok {
+			t.Fatalf("cancelWorks, test %s: expected to not find the key in subscribers, but did", test.desc)
+		}
 	}
 }
 

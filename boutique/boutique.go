@@ -233,10 +233,11 @@ Below we are subscriging to the "State" field when it changes and print out the 
 There is no guarenetee that you will receive all update messages, but when pulling from
 the subscription channel, we guarenetee that it will be for the latest change.
 
-  sub, err := store.Subscribe("State")
+  sub, cancel, err := store.Subscribe("State")
   if err != nil {
     // Do something
   }
+  defer cancel()
 
   go func() {
     for s := range sub {
@@ -351,11 +352,43 @@ func validateState(state interface{}) error {
 // subscribers holds a mapping of field names to channels that will receive
 // an update when the field name changes. A special field "any" will be updated
 // for any change.
-type subscribers map[string][]chan Signal
+type subscribers map[string][]subscriber
+
+type subscriber struct {
+	id int
+	ch chan Signal
+}
 
 type stateChange struct {
 	old, new interface{}
 	wg       *sync.WaitGroup
+}
+
+// CancelFunc is used to cancel a subscription
+type CancelFunc func()
+
+func cancelFunc(c *Container, field string, id int) CancelFunc {
+	return func() {
+		c.smu.Lock()
+		defer c.smu.Unlock()
+
+		v := c.subscribers[field]
+		if len(v) == 1 {
+			close(v[0].ch)
+			delete(c.subscribers, field)
+			return
+		}
+
+		l := make([]subscriber, 0, len(v)-1)
+		for _, s := range v {
+			if s.id == id {
+				close(s.ch)
+				continue
+			}
+			l = append(l, s)
+		}
+		c.subscribers[field] = l
+	}
 }
 
 // Container provides access to the single data store for the application.
@@ -364,15 +397,21 @@ type Container struct {
 	// mod holds all the state modifiers.
 	mod Modifier
 
-	// smu, pmu prevents concurrent AddSubscriber() calls.
-	smu, pmu sync.Mutex
-	// subscribers holds the map of subscribers for different fields.
-	// It stores type subscribers.
-	subscribers atomic.Value
+	// pmu prevents concurrent Perform() calls.
+	pmu sync.Mutex
 
 	// state is current state of the Container. Its value is a interface{}, so we
 	// don't know the type, but it is guarenteed to be a struct.
 	state atomic.Value
+
+	// smu protects subscribers and sid.
+	smu sync.RWMutex
+
+	// subscribers holds the map of subscribers for different fields.
+	subscribers subscribers
+
+	// sid is an id for a subscriber.
+	sid int
 }
 
 // New is the constructor for Container. initialState should be a struct that is
@@ -387,9 +426,8 @@ func New(initialState interface{}, mod Modifier) (*Container, error) {
 		return nil, fmt.Errorf("Modfifier must contain some Updaters")
 	}
 
-	s := &Container{mod: mod}
+	s := &Container{mod: mod, subscribers: subscribers{}}
 	s.state.Store(initialState)
-	s.subscribers.Store(subscribers{})
 
 	return s, nil
 }
@@ -411,7 +449,10 @@ func (s *Container) write(sc stateChange) {
 	if sc.wg != nil {
 		sc.wg.Done()
 	}
-	if len(s.subscribers.Load().(subscribers)) > 0 {
+
+	s.smu.RLock()
+	defer s.smu.RUnlock()
+	if len(s.subscribers) > 0 {
 		go s.cast(sc.old, sc.new)
 	}
 }
@@ -419,27 +460,31 @@ func (s *Container) write(sc stateChange) {
 // Subscribe creates a subscriber to be notified when a field is updated.
 // The notification comes over the returned channel.  If the field is set to
 // the Any enumerator, any field change in the state data sends an update.
-func (s *Container) Subscribe(field string) (chan Signal, error) {
+// CancelFunc() can be called to cancel the subscription. On cancel, Signal
+// will be closed.
+func (s *Container) Subscribe(field string) (chan Signal, CancelFunc, error) {
 	if field != Any && !public.MatchString(field) {
-		return nil, fmt.Errorf("cannot subscribe to a field that is not public: %s", field)
+		return nil, nil, fmt.Errorf("cannot subscribe to a field that is not public: %s", field)
 	}
 
 	if field != Any && !fieldExist(field, s.State()) {
-		return nil, fmt.Errorf("cannot subscribe to non-existing field: %s", field)
+		return nil, nil, fmt.Errorf("cannot subscribe to non-existing field: %s", field)
 	}
 
 	ch := make(chan Signal, 1)
 
 	s.smu.Lock()
 	defer s.smu.Unlock()
+	defer func() { s.sid++ }()
 
-	subs := s.subscribers.Load().(subscribers)
-	if v, ok := subs[field]; ok {
-		subs[field] = append(v, ch)
+	if v, ok := s.subscribers[field]; ok {
+		s.subscribers[field] = append(v, subscriber{id: s.sid, ch: ch})
 	} else {
-		subs[field] = []chan Signal{ch}
+		s.subscribers[field] = []subscriber{
+			{id: s.sid, ch: ch},
+		}
 	}
-	return ch, nil
+	return ch, cancelFunc(s, field, s.sid), nil
 }
 
 // State returns the current stored state.
@@ -451,16 +496,18 @@ func (s *Container) State() interface{} {
 func (s *Container) cast(old, newer interface{}) {
 	changed := fieldsChanged(old, newer)
 
-	sub := s.subscribers.Load().(subscribers)
+	s.smu.RLock()
+	defer s.smu.RUnlock()
+
 	for _, field := range changed {
-		if v, ok := sub[field]; ok {
-			for _, ch := range v {
-				signal(ch)
+		if v, ok := s.subscribers[field]; ok {
+			for _, sub := range v {
+				signal(sub.ch)
 			}
 		}
 	}
-	for _, ch := range sub["any"] {
-		signal(ch)
+	for _, sub := range s.subscribers["any"] {
+		signal(sub.ch)
 	}
 }
 
