@@ -1,6 +1,7 @@
 package boutique
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -481,5 +482,95 @@ func TestPerform(t *testing.T) {
 
 	if diff != "" {
 		t.Errorf("Test TestPerform: -want/+got:\n%s", diff)
+	}
+}
+
+func TestMiddleware(t *testing.T) {
+	initial := MyState{
+		Counter: -1,
+	}
+
+	logs := []int{}
+	logger := func(a Action, newData interface{}, getState GetState, committed chan State, wg *sync.WaitGroup) (changedData interface{}, stop bool, err error) {
+		go func() {
+			defer wg.Done()
+			state := <-committed
+			if state.IsZero() {
+				return
+			}
+			logs = append(logs, state.Data.(MyState).Counter)
+		}()
+		return nil, false, nil
+	}
+
+	fiveHundredToOneThousand := func(a Action, newData interface{}, getState GetState, committed chan State, wg *sync.WaitGroup) (changedData interface{}, stop bool, err error) {
+		defer wg.Done()
+		data := newData.(MyState)
+		if data.Counter == 500 {
+			data.Counter = 1000
+		}
+		return data, false, nil
+	}
+
+	skipSevenHundred := func(a Action, newData interface{}, getState GetState, committed chan State, wg *sync.WaitGroup) (changedData interface{}, stop bool, err error) {
+		defer wg.Done()
+		data := newData.(MyState)
+		if data.Counter == 700 {
+			return nil, true, nil
+		}
+		return nil, false, nil
+	}
+
+	sawSevenHundred := false
+	sevenHundred := func(a Action, newData interface{}, getState GetState, committed chan State, wg *sync.WaitGroup) (changedData interface{}, stop bool, err error) {
+		defer wg.Done()
+		data := newData.(MyState)
+		if data.Counter == 700 {
+			sawSevenHundred = true
+		}
+		return nil, false, nil
+	}
+
+	errorEightHundred := func(a Action, newData interface{}, getState GetState, committed chan State, wg *sync.WaitGroup) (changedData interface{}, stop bool, err error) {
+		defer wg.Done()
+		data := newData.(MyState)
+		if data.Counter == 800 {
+			return nil, false, fmt.Errorf("error")
+		}
+		return nil, false, nil
+	}
+
+	middle := []Middleware{logger, fiveHundredToOneThousand, skipSevenHundred, sevenHundred, errorEightHundred}
+
+	s, err := New(initial, NewModifier(UpCounter), middle)
+	if err != nil {
+		t.Fatalf("TestPerform: %s", err)
+	}
+
+	for i := 0; i < 1000; i++ {
+		s.Perform(IncrCounter(), nil)
+	}
+
+	wantLogs := []int{}
+	counter := 0
+	for i := 0; i < 1000; i++ {
+		switch counter {
+		case 500:
+			wantLogs = append(wantLogs, 1000)
+			counter = 1001
+		case 800:
+			continue
+		default:
+			wantLogs = append(wantLogs, counter)
+			counter++
+		}
+	}
+
+	if sawSevenHundred == true {
+		t.Errorf("Test TestMiddleware: middleware sevenHundred was called on update of 700, which should have been prevented by skipSevenHundred")
+	}
+
+	if diff := pretty.Compare(logs, wantLogs); diff != "" {
+		t.Errorf("Test TestMiddleware: -want/+got:\n%s", diff)
 	}
 }

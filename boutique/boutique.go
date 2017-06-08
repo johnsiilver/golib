@@ -278,6 +278,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/golang/glog"
 )
@@ -350,18 +351,28 @@ type State struct {
 	Data interface{}
 }
 
-// Performer is a function that updates the state with the Action.
-type Performer func(Action, *sync.WaitGroup)
+// IsZero indicates that the State isn't set.
+func (s State) IsZero() bool {
+	if s.Data == nil {
+		return true
+	}
+	return false
+}
 
 // GetState returns the state of the Store.
 type GetState func() State
 
-// Middleware provides a function that is called before the state is written.
-// It can write a new state via the Performer passed along.  It is important
-// that Middleware does not attempt to write to the same areas of the state
-// object as other Middleware.  It returns a bool, which indicates if we should
-// continue execution.
-type Middleware func(Action, *sync.WaitGroup, Performer, GetState) (Action, bool)
+// Middleware provides a function that is called before the state is written.  The Action that
+// is being applied is passed, with the newData that is going to be commited, a method to get the current state,
+// and committed which will close when newData is committed. It returns either a changed version of newData or
+// nil if newData is unchanged.  It returns an indicator if we should stop processing middleware but continue
+// with our commit of the newData.  And it returns an error if we should not commit.
+// Finally the "wg" WaitGroup that is passed must have .Done() called when the Middleware finishes.
+// "committed" can be ignored unless the middleware wants to spin off a goroutine that does something after
+// the data is committed.  If the data is not committed because another Middleware returns an error, the channel will
+// be closed with an empty state. This ability allow Middleware that performs things such as logging the final result.
+// If using this ability, do not call wg.Done() until all processing is done.
+type Middleware func(a Action, newData interface{}, getState GetState, committed chan State, wg *sync.WaitGroup) (changedData interface{}, stop bool, err error)
 
 // combineUpdater takes multiple Updaters and combines them into a
 // single instance.
@@ -402,7 +413,6 @@ type stateChange struct {
 	newVersion       uint64
 	newFieldVersions map[string]uint64
 	changed          []string
-	wg               *sync.WaitGroup
 }
 
 // CancelFunc is used to cancel a subscription
@@ -483,27 +493,88 @@ func New(initialState interface{}, mod Modifier, middle []Middleware) (*Containe
 
 // Perform performs an Action on the Container's state. wg will be decremented
 // by 1 to signal the completion of the state change. wg can be nil.
-func (s *Container) Perform(a Action, wg *sync.WaitGroup) {
-	/*
-		var cont bool
+func (s *Container) Perform(a Action, wg *sync.WaitGroup) error {
+	defer func() {
+		if wg != nil {
+			wg.Done()
+		}
+	}()
 
-			for _, m := range s.middle {
-				a, cont = m(a, wg, s.perform, s.State)
-				if !cont {
-					break
-				}
-			}
-	*/
-	s.perform(a, wg)
-}
-
-func (s *Container) perform(a Action, wg *sync.WaitGroup) {
 	s.pmu.Lock()
 	defer s.pmu.Unlock()
+
 	state := s.state.Load().(State)
 	n := s.mod.run(state.Data, a)
 
+	var (
+		commitChans []chan State
+		err         error
+	)
+
+	middleWg := &sync.WaitGroup{}
+	middleWg.Add(len(s.middle))
+	n, commitChans, err = s.processMiddleware(a, n, middleWg)
+	if err != nil {
+		for _, ch := range commitChans {
+			close(ch)
+		}
+		return err
+	}
+
+	s.perform(state, n, commitChans)
+
+	done := make(chan struct{})
+	timer := time.NewTimer(5 * time.Second)
+	go func() {
+		middleWg.Wait()
+		close(done)
+	}()
+
+	// This helps users diagnose misbehaving middleware.
+	for {
+		select {
+		case <-done:
+			timer.Stop()
+		case <-timer.C:
+			glog.Infof("middleware is taking longer that 5 seconds, did you call wg.Done()?")
+			continue
+		}
+		break
+	}
+
+	return nil
+}
+
+func (s *Container) processMiddleware(a Action, newData interface{}, wg *sync.WaitGroup) (data interface{}, commitChans []chan State, err error) {
+	commitChans = make([]chan State, len(s.middle))
+	for i := 0; i < len(commitChans); i++ {
+		commitChans[i] = make(chan State, 1)
+	}
+
+	for i, m := range s.middle {
+		cd, stop, err := m(a, newData, s.State, commitChans[i], wg)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if cd != nil {
+			newData = cd
+		}
+
+		if stop {
+			break
+		}
+	}
+	return newData, commitChans, nil
+}
+
+func (s *Container) perform(state State, n interface{}, commitChans []chan State) {
 	changed := fieldsChanged(state.Data, n)
+
+	// This can happen if middleware interferes.
+	if len(changed) == 0 {
+		return
+	}
 
 	// Copy the field versions so that its safe between loaded states.
 	fieldVersions := make(map[string]uint64, len(state.FieldVersions))
@@ -523,26 +594,26 @@ func (s *Container) perform(a Action, wg *sync.WaitGroup) {
 		newVersion:       state.Version + 1,
 		newFieldVersions: fieldVersions,
 		changed:          changed,
-		wg:               wg,
 	}
 
-	s.write(sc)
+	writtenState := s.write(sc)
+
+	for _, ch := range commitChans {
+		ch <- writtenState
+	}
 }
 
 // write processes the change in state.
-func (s *Container) write(sc stateChange) {
-	s.state.Store(State{Data: sc.new, Version: sc.newVersion, FieldVersions: sc.newFieldVersions})
-	if sc.wg != nil {
-		sc.wg.Done()
-	}
+func (s *Container) write(sc stateChange) State {
+	state := State{Data: sc.new, Version: sc.newVersion, FieldVersions: sc.newFieldVersions}
+	s.state.Store(state)
 
 	s.smu.RLock()
 	defer s.smu.RUnlock()
 	if len(s.subscribers) > 0 {
-		glog.Infof("old: %+v", sc.old)
-		glog.Infof("new: %+v", sc.new)
 		go s.cast(sc)
 	}
+	return state
 }
 
 // Subscribe creates a subscriber to be notified when a field is updated.
