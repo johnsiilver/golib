@@ -269,11 +269,17 @@ func subscribeSignalsCorrectly(t *testing.T) {
 	go func() {
 		for {
 			select {
-			case <-sch:
+			case s := <-sch:
+				if s.Fields[0] != "Status" {
+					t.Fatalf("Test subscribeSignalsCorrectly: Signal for field Status had FieldsChanged set to: %s", s.Fields[0])
+				}
 				mu.Lock()
 				count.status++
 				mu.Unlock()
-			case <-lch:
+			case s := <-lch:
+				if s.Fields[0] != "List" {
+					t.Fatalf("Test subscribeSignalsCorrectly: Signal for field List had FieldsChanged set to: %s", s.Fields[0])
+				}
 				mu.Lock()
 				count.list++
 				mu.Unlock()
@@ -459,8 +465,18 @@ func TestPerform(t *testing.T) {
 		},
 		s.State().Data.(MyState),
 	)
-	if s.State().Version != uint64(loop*3) { // Perform has been called 3 times
+
+	if s.State().Version != uint64(loop*3) {
 		t.Errorf("Test TestPerform: got Version == %d, want %d", s.State().Version, loop*3)
+	}
+
+	switch {
+	case s.State().FieldVersions["Status"] != uint64(loop):
+		t.Errorf("Test TestPerform: got FieldVersion['Status'] == %d, want %d", s.State().FieldVersions["Status"], loop)
+	case s.State().FieldVersions["Counter"] != uint64(loop):
+		t.Errorf("Test TestPerform: got FieldVersion['Counter'] == %d, want %d", s.State().FieldVersions["Counter"], loop)
+	case s.State().FieldVersions["List"] != uint64(loop):
+		t.Errorf("Test TestPerform: got FieldVersion['List'] == %d, want %d", s.State().FieldVersions["List"], loop)
 	}
 
 	if diff != "" {

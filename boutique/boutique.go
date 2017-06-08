@@ -275,6 +275,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -291,7 +292,15 @@ var (
 
 // Signal is used to signal upstream subscribers that a field in the Container.Store
 // has changed.
-type Signal struct{}
+type Signal struct {
+	// Version is the version of the field that was changed.  If Any was passed, it will
+	// be the store's version, not a specific field.
+	Version uint64
+
+	// Fields are the field names that were updated.  This is only a single name unless
+	// Any is used.
+	Fields []string
+}
 
 // Action represents an action to take on the Container.
 type Action struct {
@@ -332,6 +341,10 @@ type State struct {
 	// Version is the version of the state this represents.  Each change updates
 	// this version number.
 	Version uint64
+
+	// FieldVersions holds the version each field is at. This allows us to track
+	// individual field updates.
+	FieldVersions map[string]uint64
 
 	// Data is the state data.  They type is some type of struct.
 	Data interface{}
@@ -385,9 +398,11 @@ type subscriber struct {
 }
 
 type stateChange struct {
-	old, new   interface{}
-	newVersion uint64
-	wg         *sync.WaitGroup
+	old, new         interface{}
+	newVersion       uint64
+	newFieldVersions map[string]uint64
+	changed          []string
+	wg               *sync.WaitGroup
 }
 
 // CancelFunc is used to cancel a subscription
@@ -455,8 +470,13 @@ func New(initialState interface{}, mod Modifier, middle []Middleware) (*Containe
 		return nil, fmt.Errorf("Modfifier must contain some Updaters")
 	}
 
+	fieldVersions := map[string]uint64{}
+	for _, f := range fieldList(initialState) {
+		fieldVersions[f] = 0
+	}
+
 	s := &Container{mod: mod, subscribers: subscribers{}, middle: middle}
-	s.state.Store(State{Version: 0, Data: initialState})
+	s.state.Store(State{Version: 0, FieldVersions: fieldVersions, Data: initialState})
 
 	return s, nil
 }
@@ -483,12 +503,35 @@ func (s *Container) perform(a Action, wg *sync.WaitGroup) {
 	state := s.state.Load().(State)
 	n := s.mod.run(state.Data, a)
 
-	s.write(stateChange{old: state.Data, new: n, wg: wg, newVersion: state.Version + 1})
+	changed := fieldsChanged(state.Data, n)
+
+	// Copy the field versions so that its safe between loaded states.
+	fieldVersions := make(map[string]uint64, len(state.FieldVersions))
+	for k, v := range state.FieldVersions {
+		fieldVersions[k] = v
+	}
+
+	// Update the field versions that had changed.
+	for _, k := range changed {
+		fieldVersions[k] = fieldVersions[k] + 1
+	}
+	sort.Strings(changed)
+
+	sc := stateChange{
+		old:              state.Data,
+		new:              n,
+		newVersion:       state.Version + 1,
+		newFieldVersions: fieldVersions,
+		changed:          changed,
+		wg:               wg,
+	}
+
+	s.write(sc)
 }
 
 // write processes the change in state.
 func (s *Container) write(sc stateChange) {
-	s.state.Store(State{Data: sc.new, Version: sc.newVersion})
+	s.state.Store(State{Data: sc.new, Version: sc.newVersion, FieldVersions: sc.newFieldVersions})
 	if sc.wg != nil {
 		sc.wg.Done()
 	}
@@ -498,7 +541,7 @@ func (s *Container) write(sc stateChange) {
 	if len(s.subscribers) > 0 {
 		glog.Infof("old: %+v", sc.old)
 		glog.Infof("new: %+v", sc.new)
-		go s.cast(sc.old, sc.new)
+		go s.cast(sc)
 	}
 }
 
@@ -538,29 +581,27 @@ func (s *Container) State() State {
 }
 
 // cast updates subscribers for data changes.
-func (s *Container) cast(old, newer interface{}) {
-	changed := fieldsChanged(old, newer)
-
+func (s *Container) cast(sc stateChange) {
 	s.smu.RLock()
 	defer s.smu.RUnlock()
 
-	for _, field := range changed {
+	for _, field := range sc.changed {
 		if v, ok := s.subscribers[field]; ok {
 			for _, sub := range v {
-				signal(sub.ch)
+				signal(Signal{Version: sc.newFieldVersions[field], Fields: []string{field}}, sub.ch)
 			}
 		}
 	}
+
 	for _, sub := range s.subscribers["any"] {
-		signal(sub.ch)
+		signal(Signal{Version: sc.newVersion, Fields: sc.changed}, sub.ch)
 	}
 }
 
-// signal sends an empty struct as a signal on a channel. If the channel is
-// blocked, the signal is not sent.
-func signal(ch chan Signal) {
+// signal sends a Signa on a channel. If the channel is blocked, the signal is not sent.
+func signal(sig Signal, ch chan Signal) {
 	select {
-	case ch <- Signal{}:
+	case ch <- sig:
 		// Do nothing
 	default:
 		// Do nothing
@@ -590,6 +631,17 @@ func fieldsChanged(a, z interface{}) []string {
 		}
 	}
 	return r
+}
+
+// FieldList takes in a struct and returns a list of all its field names.
+// This will panic if "st" is not a struct.
+func fieldList(st interface{}) []string {
+	v := reflect.TypeOf(st)
+	sl := make([]string, v.NumField())
+	for i := 0; i < v.NumField(); i++ {
+		sl[i] = v.Field(i).Name
+	}
+	return sl
 }
 
 // ShallowCopy makes a copy of a value. On pointers or references, you will
