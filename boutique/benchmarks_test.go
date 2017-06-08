@@ -1,8 +1,12 @@
 package boutique
 
 import (
+	"log"
 	"sync"
 	"testing"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 /*
@@ -25,12 +29,18 @@ These benchmarks don't take into account the biggest cost in using this module,
 which is calculating the changes for subscribers.
 */
 
+func init() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+}
+
 const iterations = 500
 
 func BenchmarkConcurrentPerform(b *testing.B) {
 	initial := MyState{Counter: 0}
 
-	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList), nil)
 	if err != nil {
 		b.Fatalf("BenchmarkConcurrentPerform: %s", err)
 	}
@@ -49,7 +59,7 @@ func BenchmarkConcurrentPerform(b *testing.B) {
 func BenchmarkMultifieldPerform(b *testing.B) {
 	initial := MyState{Counter: 0, List: []string{}}
 
-	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList), nil)
 	if err != nil {
 		b.Fatalf("BenchmarkMultifieldConcurrentPerform: %s", err)
 	}

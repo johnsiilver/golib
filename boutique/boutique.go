@@ -277,6 +277,8 @@ import (
 	"regexp"
 	"sync"
 	"sync/atomic"
+
+	"github.com/golang/glog"
 )
 
 // Any is used to indicated to Container.Subscribe() that you want updates for
@@ -284,7 +286,7 @@ import (
 const Any = "any"
 
 var (
-	public = regexp.MustCompile(`^[A-Z].*`)
+	publicRE = regexp.MustCompile(`^[A-Z].*`)
 )
 
 // Signal is used to signal upstream subscribers that a field in the Container.Store
@@ -325,6 +327,29 @@ func (m Modifier) run(state interface{}, action Action) interface{} {
 	return m.updater(state, action)
 }
 
+// State holds the state data.
+type State struct {
+	// Version is the version of the state this represents.  Each change updates
+	// this version number.
+	Version uint64
+
+	// Data is the state data.  They type is some type of struct.
+	Data interface{}
+}
+
+// Performer is a function that updates the state with the Action.
+type Performer func(Action, *sync.WaitGroup)
+
+// GetState returns the state of the Store.
+type GetState func() State
+
+// Middleware provides a function that is called before the state is written.
+// It can write a new state via the Performer passed along.  It is important
+// that Middleware does not attempt to write to the same areas of the state
+// object as other Middleware.  It returns a bool, which indicates if we should
+// continue execution.
+type Middleware func(Action, *sync.WaitGroup, Performer, GetState) (Action, bool)
+
 // combineUpdater takes multiple Updaters and combines them into a
 // single instance.
 // Note: We do not provide any safety here. If you
@@ -360,8 +385,9 @@ type subscriber struct {
 }
 
 type stateChange struct {
-	old, new interface{}
-	wg       *sync.WaitGroup
+	old, new   interface{}
+	newVersion uint64
+	wg         *sync.WaitGroup
 }
 
 // CancelFunc is used to cancel a subscription
@@ -397,6 +423,9 @@ type Container struct {
 	// mod holds all the state modifiers.
 	mod Modifier
 
+	// middle holds all the Middleware we must apply.
+	middle []Middleware
+
 	// pmu prevents concurrent Perform() calls.
 	pmu sync.Mutex
 
@@ -417,7 +446,7 @@ type Container struct {
 // New is the constructor for Container. initialState should be a struct that is
 // used for application's state. All Updaters in mod must return the same struct
 // that initialState contains or you will receive a panic.
-func New(initialState interface{}, mod Modifier) (*Container, error) {
+func New(initialState interface{}, mod Modifier, middle []Middleware) (*Container, error) {
 	if err := validateState(initialState); err != nil {
 		return nil, err
 	}
@@ -426,8 +455,8 @@ func New(initialState interface{}, mod Modifier) (*Container, error) {
 		return nil, fmt.Errorf("Modfifier must contain some Updaters")
 	}
 
-	s := &Container{mod: mod, subscribers: subscribers{}}
-	s.state.Store(initialState)
+	s := &Container{mod: mod, subscribers: subscribers{}, middle: middle}
+	s.state.Store(State{Version: 0, Data: initialState})
 
 	return s, nil
 }
@@ -435,17 +464,31 @@ func New(initialState interface{}, mod Modifier) (*Container, error) {
 // Perform performs an Action on the Container's state. wg will be decremented
 // by 1 to signal the completion of the state change. wg can be nil.
 func (s *Container) Perform(a Action, wg *sync.WaitGroup) {
-	s.pmu.Lock()
-	defer s.pmu.Unlock()
-	state := s.state.Load()
-	n := s.mod.run(state, a)
+	/*
+		var cont bool
 
-	s.write(stateChange{old: state, new: n, wg: wg})
+			for _, m := range s.middle {
+				a, cont = m(a, wg, s.perform, s.State)
+				if !cont {
+					break
+				}
+			}
+	*/
+	s.perform(a, wg)
 }
 
-// write loops on the writeCh and processes the change.
+func (s *Container) perform(a Action, wg *sync.WaitGroup) {
+	s.pmu.Lock()
+	defer s.pmu.Unlock()
+	state := s.state.Load().(State)
+	n := s.mod.run(state.Data, a)
+
+	s.write(stateChange{old: state.Data, new: n, wg: wg, newVersion: state.Version + 1})
+}
+
+// write processes the change in state.
 func (s *Container) write(sc stateChange) {
-	s.state.Store(sc.new)
+	s.state.Store(State{Data: sc.new, Version: sc.newVersion})
 	if sc.wg != nil {
 		sc.wg.Done()
 	}
@@ -453,6 +496,8 @@ func (s *Container) write(sc stateChange) {
 	s.smu.RLock()
 	defer s.smu.RUnlock()
 	if len(s.subscribers) > 0 {
+		glog.Infof("old: %+v", sc.old)
+		glog.Infof("new: %+v", sc.new)
 		go s.cast(sc.old, sc.new)
 	}
 }
@@ -463,11 +508,11 @@ func (s *Container) write(sc stateChange) {
 // CancelFunc() can be called to cancel the subscription. On cancel, Signal
 // will be closed.
 func (s *Container) Subscribe(field string) (chan Signal, CancelFunc, error) {
-	if field != Any && !public.MatchString(field) {
+	if field != Any && !publicRE.MatchString(field) {
 		return nil, nil, fmt.Errorf("cannot subscribe to a field that is not public: %s", field)
 	}
 
-	if field != Any && !fieldExist(field, s.State()) {
+	if field != Any && !fieldExist(field, s.State().Data) {
 		return nil, nil, fmt.Errorf("cannot subscribe to non-existing field: %s", field)
 	}
 
@@ -488,8 +533,8 @@ func (s *Container) Subscribe(field string) (chan Signal, CancelFunc, error) {
 }
 
 // State returns the current stored state.
-func (s *Container) State() interface{} {
-	return s.state.Load()
+func (s *Container) State() State {
+	return s.state.Load().(State)
 }
 
 // cast updates subscribers for data changes.

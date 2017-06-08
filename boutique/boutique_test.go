@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/kylelemons/godebug/pretty"
 	"github.com/lukechampine/freeze"
 )
@@ -111,6 +112,9 @@ func TestModifier(t *testing.T) {
 }
 
 func TestCopyAndAppendSlice(t *testing.T) {
+	glog.Infof("TestCopyAndAppendSlice")
+	defer glog.Infof("End TestCopyAndAppendSlice")
+
 	a := "apples"
 	b := "oranges"
 
@@ -178,6 +182,9 @@ func TestCopyAndAppendSlice(t *testing.T) {
 }
 
 func TestFieldsChanged(t *testing.T) {
+	glog.Infof("TestFieldsChanged")
+	defer glog.Infof("End TestFieldsChanged")
+
 	os := MyState{Dict: map[string]bool{}}
 	ns := MyState{Counter: 1, Dict: map[string]bool{}}
 
@@ -210,9 +217,18 @@ type counters struct {
 }
 
 func TestSubscribe(t *testing.T) {
+	glog.Infof("TestSubscribe")
+	defer glog.Infof("End TestSubscribe")
+
+	glog.Infof("--subscribeSignalsCorrectly")
 	subscribeSignalsCorrectly(t)
+	glog.Infof("--end subscribeSignalsCorrectly")
+	glog.Infof("--signalsDontBlock")
 	signalsDontBlock(t)
+	glog.Infof("--end signalsDontBlock")
+	glog.Infof("--cancelWorks")
 	cancelWorks(t)
+	glog.Infof("--end cancelWorks")
 }
 
 func subscribeSignalsCorrectly(t *testing.T) {
@@ -224,7 +240,7 @@ func subscribeSignalsCorrectly(t *testing.T) {
 	}
 	freeze.Object(&initial)
 
-	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList), nil)
 	if err != nil {
 		t.Fatalf("TestPerform: %s", err)
 	}
@@ -271,7 +287,8 @@ func subscribeSignalsCorrectly(t *testing.T) {
 	}()
 
 	status := "status"
-	for i := 0; i < 1000; i++ {
+	loops := 1000
+	for i := 0; i < loops; i++ {
 		status = status + ":changed:"
 		s.Perform(Status(status), nil)
 		<-countDone
@@ -282,10 +299,9 @@ func subscribeSignalsCorrectly(t *testing.T) {
 			<-countDone
 			<-countDone // For Any
 		}
-
 	}
 
-	want := counters{status: 1000, list: 500, any: 1500}
+	want := counters{status: loops, list: loops / 2, any: loops + (loops / 2)}
 	if diff := pretty.Compare(want, count); diff != "" {
 		t.Errorf("TestSubscribe: -want/+got:\n%s", diff)
 	}
@@ -301,7 +317,7 @@ func signalsDontBlock(t *testing.T) {
 	}
 	freeze.Object(&initial)
 
-	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList), nil)
 	if err != nil {
 		t.Fatalf("signalsDontBlock: %s", err)
 	}
@@ -328,7 +344,7 @@ func signalsDontBlock(t *testing.T) {
 func cancelWorks(t *testing.T) {
 	initial := MyState{Counter: 0}
 
-	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList), nil)
 	if err != nil {
 		t.Fatalf("cancelWorks: %s", err)
 	}
@@ -411,7 +427,7 @@ func TestPerform(t *testing.T) {
 	}
 	freeze.Object(&initial)
 
-	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList))
+	s, err := New(initial, NewModifier(UpCounter, UpStatus, UpList), nil)
 	if err != nil {
 		t.Fatalf("TestPerform: %s", err)
 	}
@@ -419,7 +435,8 @@ func TestPerform(t *testing.T) {
 	wg := &sync.WaitGroup{}
 	status := ""
 	list := []string{}
-	for i := 0; i < 1000; i++ {
+	loop := 1000
+	for i := 0; i < loop; i++ {
 		wg.Add(1)
 		status = status + "a"
 		s.Perform(Status(status), wg) // Cannot be done in a goroutine.
@@ -440,8 +457,12 @@ func TestPerform(t *testing.T) {
 			Status:  status,
 			List:    list,
 		},
-		s.State().(MyState),
+		s.State().Data.(MyState),
 	)
+	if s.State().Version != uint64(loop*3) { // Perform has been called 3 times
+		t.Errorf("Test TestPerform: got Version == %d, want %d", s.State().Version, loop*3)
+	}
+
 	if diff != "" {
 		t.Errorf("Test TestPerform: -want/+got:\n%s", diff)
 	}
