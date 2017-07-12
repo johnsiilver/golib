@@ -19,6 +19,12 @@ import (
 	"regexp"
 )
 
+// MiB is a Mebibyte (sometimes called a Megabyte).
+const (
+  MiB = 1048576
+  chunkSize = 5 * MiB
+)
+
 var (
 	KeepAlive = byte(011)
 	LenTotal  = 36
@@ -113,12 +119,37 @@ func (m *ClientMsg) Encode(w io.Writer) error {
 	buf.Write(handleLen)
 	buf.WriteString(m.Handler)
 	buf.Write(dataLen)
-	buf.Write(m.Data)
 
-	// Write the buffer to output stream.
+
+	// Write the header buffer to output stream.
 	if _, err := w.Write(buf.Bytes()); err != nil {
 		return fmt.Errorf("problem encoding ClientMsg onto io.Writer: %s", err)
 	}
+
+  if len(m.Data) > 0 {
+    lBound := 0
+    rBound := chunkSize
+    if len(m.Data) < chunkSize {
+      rBound = len(m.Data)
+    }
+
+    log.Infof("size of data to encode: %d", len(m.Data))
+    for {
+      log.Infof("writing chunk %d:%d", lBound, rBound)
+      if _, err := w.Write(m.Data[lBound:rBound]); err != nil {
+        return fmt.Errorf("problem encoding ClientMsg data onto io.Writer: %s", err)
+      }
+      if rBound == len(m.Data){
+        break
+      }
+      lBound = rBound
+      if rBound + chunkSize > len(m.Data){
+        rBound = len(m.Data)
+      }else{
+        rBound += chunkSize
+      }
+    }
+  }
 
 	return nil
 }
@@ -126,28 +157,20 @@ func (m *ClientMsg) Encode(w io.Writer) error {
 // Decodes a byte encoded message into Message.
 func (m *ClientMsg) Decode(r io.ByteReader) error {
 	// Read the message length.
-	size, err := binary.ReadUvarint(r)
+	_, err := binary.ReadUvarint(r)
 	if err != nil {
 		return fmt.Errorf("bytes did not contain an total length")
 	}
 
-	b := make([]byte, int(size))
-	n, _ := r.(io.Reader).Read(b)
-	if n != int(size) {
-		return fmt.Errorf("clientMsg could not read the total data sent back")
-	}
-
-	buf := bufio.NewReader(bytes.NewBuffer(b))
-
 	// Read the message ID.
-	i, err := binary.ReadUvarint(buf)
+	i, err := binary.ReadUvarint(r)
 	if err != nil {
 		return fmt.Errorf("bytes did not contain an ID")
 	}
 	m.ID = i
 
 	// Read the message Type.
-	i, err = binary.ReadUvarint(buf)
+	i, err = binary.ReadUvarint(r)
 	if err != nil {
 		return fmt.Errorf("bytes did not contain a Type: %s", err)
 	}
@@ -157,7 +180,7 @@ func (m *ClientMsg) Decode(r io.ByteReader) error {
 	m.Type = i
 
 	// Read the handler length.
-	i, err = binary.ReadUvarint(buf)
+	i, err = binary.ReadUvarint(r)
 	if err != nil {
 		log.Info(err)
 		return fmt.Errorf("bytes did not contain handler length: %s", err)
@@ -165,24 +188,60 @@ func (m *ClientMsg) Decode(r io.ByteReader) error {
 
 	// Read the handler back.
 	by := make([]byte, i)
-	n, _ = buf.Read(by)
-	if n != int(i) {
-		return fmt.Errorf("handler was not encoded up to the length, expected %d, got %d bytes", i, n)
-	}
+  for x := 0; x < int(i); x++ {
+    by[x], err = r.ReadByte()
+    if err != nil {
+      return fmt.Errorf("handler was not encoded up to the length, expected %d, got %d bytes", i, x)
+    }
+  }
 	m.Handler = string(by)
+  log.Infof("handler was: %s", m.Handler)
 
 	// Read the length of the data and the data back.
-	i, err = binary.ReadUvarint(buf)
+	i, err = binary.ReadUvarint(r)
 	if err != nil {
 		return fmt.Errorf("bytes did not contain data length")
 	}
 
-	by = make([]byte, i)
-	n, _ = buf.Read(by)
-	if n != int(i) {
-		return fmt.Errorf("bytes was not encoded up to the length")
-	}
-	m.Data = by
+  log.Infof("i was %d", i)
+  out := make([]byte, int(i))
+  if i > 0 {
+    for x := 0; x < int(i); x++ {
+      out[x], err = r.ReadByte()
+      if err != nil {
+        continue
+      }
+    }
+    /*
+    lBound := 0
+    rBound := chunkSize
+    if i < chunkSize {
+      rBound = int(i)
+    }
+
+    by = make([]byte, chunkSize)
+    for {
+      by = by[0: rBound - lBound]
+      _, err = buf.Read(by)
+    	if err != nil {
+    		return fmt.Errorf("bytes was not encoded up to the length")
+      }
+      out.Write(by)
+
+      if rBound == len(m.Data){
+        break
+      }
+      lBound = rBound
+      if rBound + chunkSize > int(i) {
+        rBound = int(i)
+      }else{
+        rBound += chunkSize
+      }
+    }
+    */
+  }
+
+	m.Data = out
 
 	return nil
 }

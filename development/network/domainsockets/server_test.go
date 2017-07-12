@@ -14,7 +14,7 @@ import (
 	"golang.org/x/net/context"
 )
 
-const numMess = 100000
+const numMess = 1
 
 func TestServer(t *testing.T) {
 	uid := uuid.New()

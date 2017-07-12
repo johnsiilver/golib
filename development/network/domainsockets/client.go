@@ -35,6 +35,7 @@ type Client struct {
 	done    chan struct{}
 
 	bufferSize int
+
 	mu         sync.Mutex // mu protects everything below.
 	responses  map[uint64]chan response
 }
@@ -93,24 +94,21 @@ func DialServer(uid string) (*Client, error) {
 		responses: make(map[uint64]chan response),
 	}
 
+  if err := c.inConn.SetWriteBuffer(5 * MiB); err != nil {
+    return nil, fmt.Errorf("cannot set the Unix Domain Socket buffer to 5 MiB")
+  }
+
 	go c.send()
 	go c.receive()
 	return c, nil
 }
 
-var responses uint64 = 0
-var respMu sync.Mutex
-
 // Call makes a call to the remote procedure "call" with arguments in "msg".
 // It returns the server's response or error.
+// TODO(jdoak): Signal the far side of a context cancel.
 func (c *Client) Call(ctx context.Context, call string, msg *ClientMsg) (*ServerMsg, error) {
 	msg.Type = ClientData
 	msg.Handler = call
-
-	respMu.Lock()
-	count := responses
-	responses++
-	respMu.Unlock()
 
 	req := request{
 		ctx:  ctx,
@@ -119,7 +117,6 @@ func (c *Client) Call(ctx context.Context, call string, msg *ClientMsg) (*Server
 	}
 	c.reqCh <- req
 	resp := <-req.resp
-	log.Infof("call got back call %d", count)
 
 	return resp.msg, resp.err
 }
@@ -131,15 +128,18 @@ func (c *Client) send() {
 		c.responses[id] = req.resp
 		c.mu.Unlock()
 
-		// TODO(jdoak): This should be a goroutine, but for whatever reason doing
-		// so causes the ID to be used more than once.  Fix this
-		func(req request, msgID uint64) {
+    // TODO(jdoak): I am so confused by this code.  Could not get the id thing
+    // to work with the goroutines and now, if you remove the func(){} wrapper,
+    // this think stops working.  If you leave it, it works.
+    // MAKES NO SENSE!!!!!
+		func() {
+      defer log.Infof("func() done")
 			for {
 				select {
 				case <-req.ctx.Done():
 					c.mu.Lock()
-					c.responses[msgID] <- response{err: req.ctx.Err()}
-					delete(c.responses, msgID)
+					c.responses[id] <- response{err: req.ctx.Err()}
+					delete(c.responses, id)
 					c.mu.Unlock()
 					return
 				case <-c.done:
@@ -148,17 +148,13 @@ func (c *Client) send() {
 					// Do nothing.
 				}
 
-				req.msg.ID = msgID
+				req.msg.ID = id
 				if err := req.msg.Encode(c.inConn); err != nil {
-					c.bufferSize += clientMsgHeader + len(req.msg.Data)
-					if err := c.inConn.SetWriteBuffer(c.bufferSize); err != nil {
-						log.Infof("cannot extend the write buffer further: %s", err)
-					}
 					continue
 				}
 				return
 			}
-		}(req, id)
+		}()
 		id++
 	}
 }
