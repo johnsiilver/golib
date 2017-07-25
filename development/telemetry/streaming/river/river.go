@@ -6,6 +6,7 @@ package river
 import (
 	"expvar"
 	"log"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -25,6 +26,7 @@ func getRegistry() map[string]expvar.Var {
 // Publish declares a named exported variable. This should be called from a
 // package's init function when it creates its Vars. If the name is already
 // registered then this will log.Panic.
+// Publishing a Func will call the Func() once to verify its output.
 func Publish(name string, v expvar.Var) {
 	regMu.Lock()
 	defer regMu.Unlock()
@@ -34,8 +36,18 @@ func Publish(name string, v expvar.Var) {
 		log.Panicf("river.Publish(): two packages tried to register variable %s", name)
 	}
 
-	switch v.(type) {
-	case Float, Int, String, Map, Func:
+	switch /*t :=*/ v.(type) {
+	case Float, Int, String, *Map:
+		/*
+			case Func:
+				ret := t.Value()
+				switch ret.(type) {
+				case int64, float64, string, Map, expvar.Var:
+				default:
+					panic("cannot Publish a Func() that does not return int64/float64/string/river.Map/expvar.Var")
+				}
+				v = newFuncHolder(t)
+		*/
 	default:
 		panic("cannot Publish an expvar.Var not defined in the river pacakge")
 	}
@@ -51,5 +63,6 @@ func GetVars() []string {
 	for k := range r {
 		sl = append(sl, k)
 	}
+	sort.Strings(sl)
 	return sl
 }

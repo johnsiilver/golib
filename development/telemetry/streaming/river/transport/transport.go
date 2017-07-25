@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/johnsiilver/golib/development/telemetry/streaming/river/state/data"
 )
@@ -20,15 +21,54 @@ const (
 	UnknownOp OpType = 0
 	// SubscribeOp indicates we are trying to subscribe to certain variables.
 	SubscribeOp OpType = 1
-	// RemoveOp indicates we are trying to remove certain variables from
+	// DropOp indicates we are trying to remove certain variables from
 	// monitoring.
-	RemoveOp OpType = 2
+	DropOp OpType = 2
 )
 
 // Operation is an instruction from the monitor to a river application.
 type Operation struct {
 	// Type is the operation type that is happening.
 	Type OpType
+
+	// Subscribe contains data if the Type === SubscribeOp.
+	Subscribe Subscribe
+
+	// Drop contains data if the Type == DropOp.
+	Drop Drop
+}
+
+// Subscribe describes a monitors attempt to subscribe to a variable.
+type Subscribe struct {
+	// Name is the name of the variable to subscribe to.
+	Name string
+	// Interval is the minimum time between updates.
+	Interval time.Duration
+}
+
+// Validate validates that the Subscribe contains data within constraints.
+func (s Subscribe) Validate() error {
+	if s.Name == "" {
+		return fmt.Errorf("cannot subscribe to a blank variable name")
+	}
+	if s.Interval > 1*time.Minute {
+		return fmt.Errorf("cannot subscribe to a variable with an Interval > 1 minute")
+	}
+	return nil
+}
+
+// Drop describes a moniors attempt to drop a variable.
+type Drop struct {
+	// Name is the name of the variable to drop.
+	Name string
+}
+
+// Validate validates that the Drop contains data within constraints.
+func (d Drop) Validate() error {
+	if d.Name == "" {
+		return fmt.Errorf("cannot drop a blank variable name")
+	}
+	return nil
 }
 
 // Source is the river app that is connecting to a monitor.
@@ -120,7 +160,7 @@ type RiverTransport interface {
 	// Receive returns a channel that we read Operations from.
 	Receive() <-chan Operation
 	// Send sends a variable to the monitor.
-	Send(name string, v data.VarState) error
+	Send(v data.VarState) error
 	// Close closes the Transport's connection.
 	Close()
 }

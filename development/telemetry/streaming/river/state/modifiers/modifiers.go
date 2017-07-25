@@ -47,6 +47,13 @@ func VarStateMod(state interface{}, action boutique.Action) interface{} {
 		mapCopy(s.Map, n)
 		delete(n, k)
 		s.Map = n
+	case actions.ActMapReplace:
+		s.Type = data.MapType
+		m := action.Update.(map[string]expvar.Var)
+		s.Map = m
+	case actions.ActNoOp:
+		s.Type = data.MapType
+		s.NoOp = s.NoOp + 1
 	default:
 		glog.Errorf("VarStateMod does not understand the type of action: %v", action.Type)
 	}

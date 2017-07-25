@@ -26,6 +26,8 @@ const (
 	ActMapDelete
 	// ActMapReplace indicates we are replacing the VarState.Map .
 	ActMapReplace
+	// ActNoOp indicates to increment the NoOp field.
+	ActNoOp
 )
 
 // IntSet produces an Action that will change the VarState.Int field by setting
@@ -73,4 +75,9 @@ func DeleteMap(k string) boutique.Action {
 // VarState.Map field.
 func ReplaceMap(m map[string]expvar.Var) boutique.Action {
 	return boutique.Action{Type: ActMapReplace, Update: m}
+}
+
+// NoOp causes the NoOp field to be incremented.
+func NoOp() boutique.Action {
+	return boutique.Action{Type: ActNoOp}
 }
