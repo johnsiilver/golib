@@ -289,6 +289,10 @@ func TestMap(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
+	defer func() {
+		registry = atomic.Value{}
+	}()
+
 	tests := []struct {
 		desc    string
 		name    string
