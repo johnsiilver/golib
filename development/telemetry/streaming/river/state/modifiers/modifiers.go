@@ -18,6 +18,8 @@ func VarStateMod(state interface{}, action boutique.Action) interface{} {
 	s := state.(data.VarState)
 
 	switch action.Type {
+	case actions.ActNameSet:
+		s.Name = action.Update.(string)
 	case actions.ActIntSet:
 		s.Type = data.IntType
 		s.Int = action.Update.(int64)

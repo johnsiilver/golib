@@ -8,8 +8,10 @@ import (
 )
 
 const (
+	// ActNameSet indicates we are going to change the VarState.Name field.
+	ActNameSet boutique.ActionType = iota
 	// ActIntSet indicates we are going to change the VarState.Int to a specific number.
-	ActIntSet boutique.ActionType = iota
+	ActIntSet
 	// ActIntAdd indicates we are going to change the VarState.Int by adding
 	// to its existing value.
 	ActIntAdd
@@ -29,6 +31,11 @@ const (
 	// ActNoOp indicates to increment the NoOp field.
 	ActNoOp
 )
+
+// NameSet produces an Action that will change the VarState.Name field.
+func NameSet(n string) boutique.Action {
+	return boutique.Action{Type: ActNameSet, Update: n}
+}
 
 // IntSet produces an Action that will change the VarState.Int field by setting
 // its value.
