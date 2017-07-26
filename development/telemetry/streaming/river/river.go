@@ -20,7 +20,15 @@ var (
 )
 
 func getRegistry() map[string]expvar.Var {
-	return registry.Load().(map[string]expvar.Var)
+	switch t := registry.Load().(type) {
+	case nil:
+		return nil
+	case map[string]expvar.Var:
+		return t
+	default:
+		log.Panicf("registry it storing an unknown type %T", t)
+	}
+	panic("can't get here")
 }
 
 // Publish declares a named exported variable. This should be called from a
@@ -32,8 +40,18 @@ func Publish(name string, v expvar.Var) {
 	defer regMu.Unlock()
 
 	r := getRegistry()
+	if r == nil {
+		r = map[string]expvar.Var{}
+	}
+
 	if _, ok := r[name]; ok {
 		log.Panicf("river.Publish(): two packages tried to register variable %s", name)
+	}
+
+	if t, ok := v.(Var); !ok {
+		log.Panicf("river.Publish(%s): all published variables must be from the river package, was %T", name, v)
+	} else {
+		t.setName(name)
 	}
 
 	switch /*t :=*/ v.(type) {

@@ -2,7 +2,7 @@ package river
 
 import (
 	"encoding/json"
-	"expvar"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,10 +24,10 @@ func TestRiverVar(t *testing.T) {
 func TestInt(t *testing.T) {
 	t.Parallel()
 
-	x := newInt("name", 1)
+	x := MakeInt(1)
 
 	// Subscribe to the changes.
-	sub, cancel := x.Subscribe()
+	sub, cancel := x.subscribe()
 	defer cancel()
 	var final atomic.Value // data.VarState
 
@@ -71,8 +71,8 @@ func TestInt(t *testing.T) {
 		t.Errorf("TestInt: Int.Value(): got %v, want %v", x.Value(), 1001)
 	}
 
-	if diff := pretty.Compare(data.VarState{Name: "name", Type: data.IntType, Int: 1001}, x.VarState()); diff != "" {
-		t.Errorf("TestInt: Int.VarState(): -want/+got:\n%s", diff)
+	if diff := pretty.Compare(data.VarState{Name: "unnamed", Type: data.IntType, Int: 1001}, x.varState()); diff != "" {
+		t.Errorf("TestInt: Int.varState(): -want/+got:\n%s", diff)
 	}
 
 	x.Set(10)
@@ -84,10 +84,10 @@ func TestInt(t *testing.T) {
 func TestFloat(t *testing.T) {
 	t.Parallel()
 
-	x := newFloat("name", 1)
+	x := MakeFloat(1)
 
 	// Subscribe to the changes.
-	sub, cancel := x.Subscribe()
+	sub, cancel := x.subscribe()
 	defer cancel()
 	var final atomic.Value // data.VarState
 
@@ -131,8 +131,8 @@ func TestFloat(t *testing.T) {
 		t.Errorf("TestFloat: Float.Value(): got %v, want %v", x.Value(), 1001)
 	}
 
-	if diff := pretty.Compare(data.VarState{Name: "name", Type: data.FloatType, Float: 1001}, x.VarState()); diff != "" {
-		t.Errorf("TestFloat: Float.VarState(): -want/+got:\n%s", diff)
+	if diff := pretty.Compare(data.VarState{Name: "unknown", Type: data.FloatType, Float: 1001}, x.varState()); diff != "" {
+		t.Errorf("TestFloat: Float.varState(): -want/+got:\n%s", diff)
 	}
 
 	x.Set(10)
@@ -144,10 +144,10 @@ func TestFloat(t *testing.T) {
 func TestString(t *testing.T) {
 	t.Parallel()
 
-	x := newString("name", "b")
+	x := MakeString("b")
 
 	// Subscribe to the changes.
-	sub, cancel := x.Subscribe()
+	sub, cancel := x.subscribe()
 	defer cancel()
 	var final atomic.Value // data.VarState
 
@@ -187,18 +187,18 @@ func TestString(t *testing.T) {
 		t.Errorf("TestString: String.Value(): got %v, want %v", x.Value(), finalStr)
 	}
 
-	if diff := pretty.Compare(data.VarState{Name: "name", Type: data.StringType, String: finalStr}, x.VarState()); diff != "" {
-		t.Errorf("TestString: String.VarState(): -want/+got:\n%s", diff)
+	if diff := pretty.Compare(data.VarState{Name: "unknown", Type: data.StringType, String: finalStr}, x.varState()); diff != "" {
+		t.Errorf("TestString: String.varState(): -want/+got:\n%s", diff)
 	}
 }
 
 func TestMap(t *testing.T) {
 	t.Parallel()
 
-	x := newMap("name", map[string]expvar.Var{})
+	x := MakeMap()
 
 	// Subscribe to the changes.
-	sub, cancel := x.Subscribe()
+	sub, cancel := x.subscribe()
 	defer cancel()
 	var final atomic.Value // data.VarState
 
@@ -212,7 +212,7 @@ func TestMap(t *testing.T) {
 
 	// Test Set(), Add(), AddFloat().
 	wg := sync.WaitGroup{}
-	x.Set("int", newInt("name", 0))
+	x.Set("int", MakeInt(0))
 	for i := 0; i < 1000; i++ {
 		wg.Add(2)
 		go func() {
@@ -235,9 +235,9 @@ func TestMap(t *testing.T) {
 	}
 
 	// Test that updating a var in a map gives us an update.
-	i := newInt("great", 200)
+	i := MakeInt(200)
 	x.Set("great", i)
-	up, cancel := x.Subscribe()
+	up, cancel := x.subscribe()
 	defer cancel()
 	var sig boutique.Signal
 	wg.Add(1)
@@ -263,15 +263,83 @@ func TestMap(t *testing.T) {
 		t.Errorf("TestMap: testing Map.Set() subscriptions: got %v, want %v", got, "201")
 	}
 
-	const wantStr = "{\"int\": 1000, \"float\": 1000, \"great\": 201}"
-	gotStr := x.String()
-	if gotStr != wantStr {
-		t.Errorf("TestMap: testing Map.Strin(): got %v, want %v", gotStr, wantStr)
+	wantMap := map[string]interface{}{
+		"int":   1000,
+		"float": 1000.0,
+		"great": 201,
+	}
+
+	gotMap := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(x.String()), &gotMap); err != nil {
+		t.Fatalf("TestMap: Map.String() json.Unmarshal: %s", err)
+	}
+
+	if diff := pretty.Compare(wantMap, gotMap); diff != "" {
+		t.Errorf("TestMap: testing Map.String(): -want/+got:\n%s", diff)
+	}
+
+	x.Add("addInt", 3)
+	if x.Get("addInt").String() != "3" {
+		t.Errorf("TestMap: calling .Add() on non-existent key does not work")
+	}
+
+	if x.Init() != x {
+		t.Errorf("TestMap: calling .Init() should return the same map")
 	}
 }
 
-type ByKey []expvar.KeyValue
+func TestNew(t *testing.T) {
+	tests := []struct {
+		desc    string
+		name    string
+		varType string
+		init    func(n string)
+	}{
+		{
+			desc:    "NewInt()",
+			name:    "int",
+			varType: "river.Int",
+			init: func(n string) {
+				NewInt(n)
+			},
+		},
+		{
+			desc:    "NewFloat()",
+			name:    "float",
+			varType: "river.Float",
+			init: func(n string) {
+				NewFloat(n)
+			},
+		},
+		{
+			desc:    "NewString()",
+			name:    "string",
+			varType: "river.String",
+			init: func(n string) {
+				NewString(n)
+			},
+		},
+		{
+			desc:    "NewMap()",
+			name:    "map",
+			varType: "*river.Map",
+			init: func(n string) {
+				NewMap(n)
+			},
+		},
+	}
 
-func (a ByKey) Len() int           { return len(a) }
-func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+	for _, test := range tests {
+		test.init(test.name)
+		reg := getRegistry()
+		if v, ok := reg[test.name]; !ok {
+			t.Errorf("TestNew: %s: could not find registry entry after New[Type]() call", test.desc)
+			continue
+		} else {
+			gotType := fmt.Sprintf("%T", v)
+			if gotType != test.varType {
+				t.Errorf("TestNew: %s: registered wrong type, got %v, want %v", test.desc, gotType, test.varType)
+			}
+		}
+	}
+}

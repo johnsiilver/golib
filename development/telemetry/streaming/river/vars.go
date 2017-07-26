@@ -15,6 +15,10 @@ import (
 	"github.com/johnsiilver/golib/development/telemetry/streaming/river/state/data"
 )
 
+const (
+	unknownVar = "unknown"
+)
+
 // Var is an abstract type for all exported variables.
 type Var interface {
 	// String returns a valid JSON value for the variable.
@@ -22,8 +26,17 @@ type Var interface {
 	// (such as time.Time) must not be used as a Var.
 	String() string
 
-	// IsRiverVar lets us know its a river.Var instead of expvar.Var.
-	IsRiverVar()
+	// varState returns the current data.VarState that is held internally.
+	varState() data.VarState
+
+	// subscribe allows internal objects to subscribe to changes to the variable.
+	subscribe() (chan boutique.Signal, boutique.CancelFunc)
+
+	// isRiverVar lets us know its a river.Var instead of expvar.Var.
+	isRiverVar()
+
+	// setName allows us to change the internal name of the variable.
+	setName(n string)
 }
 
 // Int is a 64-bit integer variable that satisfies the Var interface.
@@ -31,17 +44,16 @@ type Int struct {
 	store *boutique.Store
 }
 
-func newInt(name string, i int64) Int {
-	v := Int{store: state.NewVarState(name)}
+// MakeInt is creates a new Int, but does not call Publish() like NewInt().
+func MakeInt(i int64) Int {
+	v := Int{store: state.NewVarState("unnamed")}
 	v.Set(i)
 	return v
 }
 
-// NewInt is the constructor for Int.
+// NewInt creates a new Int and calls Publish(name, Int).
 func NewInt(name string) Int {
-	regMu.Lock()
-	defer regMu.Unlock()
-	i := newInt(name, 0)
+	i := MakeInt(0)
 	Publish(name, i)
 	return i
 }
@@ -62,7 +74,7 @@ func (v Int) Set(value int64) {
 	v.store.Perform(actions.IntSet(value))
 }
 
-func (v Int) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
+func (v Int) subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	sig, cancel, err := v.store.Subscribe("Int")
 	if err != nil {
 		panic(err) // This should never happen.
@@ -70,28 +82,31 @@ func (v Int) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	return sig, cancel
 }
 
-func (v Int) VarState() data.VarState {
+func (v Int) varState() data.VarState {
 	return getData(v.store)
 }
 
-func (v Int) IsRiverVar() {}
+func (v Int) isRiverVar() {}
+
+func (v Int) setName(n string) {
+	v.store.Perform(actions.NameSet(n))
+}
 
 // Float is a 64-bit float variable that satisfies the Var interface.
 type Float struct {
 	store *boutique.Store
 }
 
-func newFloat(name string, f float64) Float {
-	v := Float{store: state.NewVarState(name)}
+// MakeFloat creates a new Float, but does not call Publish() like NewFloat().
+func MakeFloat(f float64) Float {
+	v := Float{store: state.NewVarState(unknownVar)}
 	v.Set(f)
 	return v
 }
 
-// NewFloat is the constructor for Float.
+// NewFloat makes a new Float and calls Publish(name, Float) with it.
 func NewFloat(name string) Float {
-	regMu.Lock()
-	defer regMu.Unlock()
-	f := newFloat(name, 0)
+	f := MakeFloat(0)
 	Publish(name, f)
 	return f
 }
@@ -114,7 +129,7 @@ func (v Float) Set(value float64) {
 	v.store.Perform(actions.FloatSet(value))
 }
 
-func (v Float) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
+func (v Float) subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	sub, cancel, err := v.store.Subscribe("Float")
 	if err != nil {
 		panic(err)
@@ -122,28 +137,30 @@ func (v Float) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	return sub, cancel
 }
 
-func (v Float) VarState() data.VarState {
+func (v Float) varState() data.VarState {
 	return getData(v.store)
 }
 
-func (v Float) IsRiverVar() {}
+func (v Float) isRiverVar() {}
+
+func (v Float) setName(n string) {
+	v.store.Perform(actions.NameSet(n))
+}
 
 // String is a string variable, and satisfies the Var interface.
 type String struct {
 	store *boutique.Store
 }
 
-func newString(name string, s string) String {
-	v := String{store: state.NewVarState(name)}
+func MakeString(s string) String {
+	v := String{store: state.NewVarState(unknownVar)}
 	v.Set(s)
 	return v
 }
 
 // NewString is the constructor for String.
 func NewString(name string) String {
-	regMu.Lock()
-	defer regMu.Unlock()
-	s := newString(name, "")
+	s := MakeString("")
 	Publish(name, s)
 	return s
 }
@@ -163,7 +180,7 @@ func (v String) Set(value string) {
 	v.store.Perform(actions.String(value))
 }
 
-func (v String) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
+func (v String) subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	sub, cancel, err := v.store.Subscribe("String")
 	if err != nil {
 		panic(err)
@@ -171,11 +188,15 @@ func (v String) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	return sub, cancel
 }
 
-func (v String) VarState() data.VarState {
+func (v String) varState() data.VarState {
 	return getData(v.store)
 }
 
-func (v String) IsRiverVar() {}
+func (v String) isRiverVar() {}
+
+func (v String) setName(n string) {
+	v.store.Perform(actions.NameSet(n))
+}
 
 type subscription struct {
 	sub    chan boutique.Signal
@@ -196,22 +217,18 @@ type Map struct {
 	// This is not used, but it seemed wise to keep track of CancelFuncs.
 	subscriptions []subscription
 
-	mu       sync.Mutex
-	internal map[string]expvar.Var
+	mu sync.Mutex
 }
 
-func newMap(name string, m map[string]expvar.Var) *Map {
+// MakeMap creates a new *Map, but does not call Publish() like NewMap().
+func MakeMap() *Map {
 	v := &Map{
-		store:         state.NewVarState(name),
+		store:         state.NewVarState(unknownVar),
 		addSub:        make(chan subscription, 10),
 		subscriptions: []subscription{},
 		mu:            sync.Mutex{},
 	}
 
-	if m != nil {
-		v.internal = m
-		v.store.Perform(actions.ReplaceMap(m))
-	}
 	go v.subs()
 
 	return v
@@ -251,9 +268,7 @@ func (v *Map) subs() {
 
 // NewMap is the constructor for Map.
 func NewMap(name string) *Map {
-	regMu.Lock()
-	defer regMu.Unlock()
-	m := newMap(name, nil)
+	m := MakeMap()
 	Publish(name, m)
 	return m
 }
@@ -278,16 +293,10 @@ func (v *Map) Get(key string) expvar.Var {
 	return m[key]
 }
 
-func (v *Map) Set(key string, av expvar.Var) {
-	switch av.(type) {
-	case Var:
-	default:
-		panic("river.Map.Set can only store expvar.Var defined in expvar")
-	}
-
-	val := av.(subscriber)
+func (v *Map) Set(key string, av Var) {
+	val := av.(Var)
 	sub := subscription{}
-	sub.sub, sub.cancel = val.Subscribe()
+	sub.sub, sub.cancel = val.subscribe()
 	v.addSub <- sub
 	v.store.Perform(actions.StoreMap(key, av))
 }
@@ -300,9 +309,9 @@ func (v *Map) Add(key string, delta int64) {
 	val := state.Map[key]
 
 	if val == nil {
-		i := newInt(key, delta)
+		i := MakeInt(delta)
 		sub := subscription{}
-		sub.sub, sub.cancel = i.Subscribe()
+		sub.sub, sub.cancel = i.subscribe()
 		v.addSub <- sub
 		v.store.Perform(actions.StoreMap(key, i))
 		return
@@ -323,9 +332,9 @@ func (v *Map) AddFloat(key string, delta float64) {
 	val := state.Map[key]
 
 	if val == nil {
-		f := newFloat(key, delta)
+		f := MakeFloat(delta)
 		sub := subscription{}
-		sub.sub, sub.cancel = f.Subscribe()
+		sub.sub, sub.cancel = f.subscribe()
 		v.addSub <- sub
 		v.store.Perform(actions.StoreMap(key, f))
 		return
@@ -351,7 +360,7 @@ func (v *Map) Init() *Map {
 	return v
 }
 
-func (v *Map) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
+func (v *Map) subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	sub, cancel, err := v.store.Subscribe(boutique.Any)
 	if err != nil {
 		panic(err)
@@ -359,11 +368,15 @@ func (v *Map) Subscribe() (chan boutique.Signal, boutique.CancelFunc) {
 	return sub, cancel
 }
 
-func (v *Map) VarState() data.VarState {
+func (v *Map) varState() data.VarState {
 	return getData(v.store)
 }
 
-func (v *Map) IsRiverVar() {}
+func (v *Map) isRiverVar() {}
+
+func (v *Map) setName(n string) {
+	v.store.Perform(actions.NameSet(n))
+}
 
 /*
 // Func implements Var by calling the function. Unlike the standard expvar.Func,

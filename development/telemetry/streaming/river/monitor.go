@@ -308,11 +308,6 @@ func monitorWriter(md *monitorData, results chan data.VarState) {
 	}
 }
 
-type subscriber interface {
-	Subscribe() (chan boutique.Signal, boutique.CancelFunc)
-	VarState() data.VarState
-}
-
 func handleSubscribes(md *monitorData, name string, v expvar.Var, interval time.Duration, writerCh chan<- data.VarState) error {
 	md.Lock()
 	defer md.Unlock()
@@ -330,10 +325,10 @@ func handleSubscribes(md *monitorData, name string, v expvar.Var, interval time.
 
 	switch t := v.(type) {
 	//case Func:
-	case subscriber:
-		sigCh, cancel := t.Subscribe()
+	case Var:
+		sigCh, cancel := t.subscribe()
 
-		i := newInterval(name, interval, t.VarState(), sigCh, cancel, writerCh)
+		i := newInterval(name, interval, t.varState(), sigCh, cancel, writerCh)
 		md.loopers[name] = &loopers{i: i}
 		i.Go()
 	default:
