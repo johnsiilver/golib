@@ -16,21 +16,149 @@ import (
 )
 
 var (
-	monitors    atomic.Value // map[string]monitorData
-	monitorsVer atomic.Value //
-	rMu         sync.Mutex
+	rMu      sync.Mutex   // Protects everything below.
+	monitors atomic.Value // map[string]*monitorData
 )
 
 type monitorData struct {
 	transport.RiverTransport
 
-	name    string
-	die     chan struct{}
-	addVar  chan transport.Subscribe
-	dropVar chan transport.Drop
+	name string
+	die  chan struct{}
+	opCh chan transport.Operation
 
 	sync.RWMutex
 	loopers map[string]*loopers
+}
+
+func newMonitorData(name string, trans transport.RiverTransport) *monitorData {
+	m := &monitorData{
+		name:           name,
+		die:            make(chan struct{}),
+		opCh:           make(chan transport.Operation, 1),
+		loopers:        map[string]*loopers{},
+		RiverTransport: trans,
+	}
+	go m.startSend()
+	go m.startReceive()
+	return m
+}
+
+// monitorWriter writes to a monitor when it receives an update for a variable.
+func (md *monitorData) monitorWriter(results chan data.VarState) {
+	glog.Infof("monitor %v monitorWriter started", md.name)
+	defer glog.Infof("monitor %v monitorWriter is dead", md.name)
+	defer md.Close()
+
+	errCh := make(chan error, 1)
+	for {
+		select {
+		case r := <-results:
+			go func() {
+				if err := md.Send(r); err != nil {
+					select { // If the channel is full, then just drop.
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}()
+		case err := <-errCh:
+			glog.Errorf("problem writing to monitor %v: %s", md.name, err)
+			glog.Errorf("killing monitor %v", md.name)
+			return
+		}
+	}
+}
+
+// starts starts our loop for listening to the monitor.
+func (md *monitorData) startReceive() {
+	for {
+		select {
+		case <-md.die:
+			glog.Infof("startReceive(%s) was told to die", md.name)
+			return
+		case op := <-md.Receive():
+			if err := op.Validate(); err != nil {
+				select {
+				case op.Response <- fmt.Errorf("error: monitor %s: invalid subscribeOp: %s", md.name, err):
+				default:
+				}
+				continue
+			}
+			md.opCh <- op
+		}
+	}
+}
+
+func (md *monitorData) startSend() {
+	results := make(chan data.VarState, 100)
+	defer close(results)
+
+	go md.monitorWriter(results)
+
+	const (
+		sentDie = 0
+		sentOp  = 1
+	)
+
+	cases := []reflect.SelectCase{
+		// #0: <-md.die
+		{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(md.die),
+		},
+		// #1: <-md.opCh
+		{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(md.opCh),
+		},
+	}
+
+	for {
+		chosen, val, recvOk := reflect.Select(cases)
+		if !recvOk {
+			glog.Infof("send to monitor %s stopped, chose %d, val %#+v", md.name, chosen, val)
+			return
+		}
+		switch chosen {
+		case sentDie:
+			glog.Infof("send to monitor %s stopped, closedChan %v", md.name, recvOk)
+			return
+		case sentOp:
+			op := val.Interface().(transport.Operation)
+
+			switch op.Type {
+			case transport.SubscribeOp:
+				expVar := getRegistry()[op.Subscribe.Name]
+				if expVar == nil {
+					op.Response <- fmt.Errorf("monitor %v asked to monitor %s, which isn't registered", md.name, op.Subscribe.Name)
+					continue
+				}
+				if err := handleSubscribes(md, op.Subscribe.Name, expVar, op.Subscribe.Interval, results); err != nil {
+					op.Response <- fmt.Errorf("monitor %v asked to monitor %s, but had error: %s", md.name, op.Subscribe.Name, err)
+					continue
+				}
+				glog.Infof("monitor %v will begin to receive variable %s", md.name, op.Subscribe.Name)
+				op.Response <- nil
+			case transport.DropOp:
+				md.deleteVar(op)
+			}
+		}
+	}
+}
+
+func (md *monitorData) deleteVar(op transport.Operation) {
+	md.Lock()
+	defer md.Unlock()
+	l := md.loopers[op.Drop.Name]
+	if l == nil {
+		op.Response <- fmt.Errorf("monitor %v asked drop %s, but it didn't exist", md.name, op.Drop.Name)
+		return
+	}
+	l.i.cancel()
+	delete(md.loopers, op.Drop.Name)
+	op.Response <- nil
 }
 
 type loopers struct {
@@ -38,6 +166,9 @@ type loopers struct {
 	i *interval
 }
 
+// interval is used to only send an updates at a maximum interval.  But if that
+// interval expires and we had an update during the blackout, we should then send
+// that data.
 type interval struct {
 	name   string
 	cancel boutique.CancelFunc
@@ -71,8 +202,8 @@ func newInterval(name string, d time.Duration, initVal data.VarState, sigCh chan
 }
 
 func (i *interval) Go() {
+	i.results <- i.val // Send the initial value.
 	go func() {
-		i.results <- i.val
 		lastSend := time.Now()
 		stopper := make(chan struct{})
 		wg := sync.WaitGroup{}
@@ -125,19 +256,12 @@ func (i *interval) Go() {
 	}()
 }
 
-func newMonitorData(name string, trans transport.RiverTransport) *monitorData {
-	return &monitorData{
-		name:           name,
-		die:            make(chan struct{}),
-		addVar:         make(chan transport.Subscribe, 1),
-		dropVar:        make(chan transport.Drop, 1),
-		loopers:        map[string]*loopers{},
-		RiverTransport: trans,
-	}
-}
-
 func getMonitors() map[string]*monitorData {
-	return monitors.Load().(map[string]*monitorData)
+	m := monitors.Load()
+	if m == nil {
+		return nil
+	}
+	return m.(map[string]*monitorData)
 }
 
 // RegisterMonitor connects to a river monitor. This will return an error if
@@ -148,6 +272,9 @@ func RegisterMonitor(ctx context.Context, dest string, t transport.RiverTranspor
 	defer rMu.Unlock()
 
 	m := getMonitors()
+	if m == nil {
+		m = map[string]*monitorData{}
+	}
 	if _, ok := m[dest]; ok {
 		return fmt.Errorf("RegisterMonitor: dest %s already exists", dest)
 	}
@@ -156,8 +283,6 @@ func RegisterMonitor(ctx context.Context, dest string, t transport.RiverTranspor
 		return fmt.Errorf("RegisterMonitor: dest %s cannot be connected to: %s", dest, err)
 	}
 	m[dest] = newMonitorData(dest, t)
-	go startSend(m[dest])
-	go startReceive(m[dest])
 	return nil
 }
 
@@ -177,108 +302,6 @@ func RemoveMonitor(dest string) {
 	delete(m, dest)
 	monitors.Store(m)
 	return
-}
-
-// starts starts our loop for listening to the monitor.
-func startReceive(md *monitorData) {
-	for {
-		select {
-		case <-md.die:
-			return
-		case err := <-md.Issue():
-			glog.Errorf("monitor %v is having an error: %s", md.name, err)
-		case op := <-md.Receive():
-			switch op.Type {
-			case transport.SubscribeOp:
-				if err := op.Subscribe.Validate(); err != nil {
-					glog.Errorf("error: monitor %s: invalid subscribeOp: %s", md.name, err)
-					continue
-				}
-				md.addVar <- op.Subscribe
-			case transport.DropOp:
-				if err := op.Drop.Validate(); err != nil {
-					glog.Errorf("error: monitor %s: invalid dropOp: %s", md.name, err)
-					continue
-				}
-				md.dropVar <- op.Drop
-			case transport.UnknownOp:
-				glog.Errorf("error: monitor %s is using a broken implmentation, UnknownOp OpType received", md.name)
-			default:
-				glog.Errorf("error: monitor %s sent an OpType not supported by this server version: %v", md.name, op.Type)
-			}
-		}
-	}
-}
-
-func startSend(md *monitorData) {
-	results := make(chan data.VarState, 100)
-	defer close(results)
-
-	go monitorWriter(md, results)
-
-	const (
-		die  = 0
-		add  = 1
-		drop = 2
-	)
-
-	cases := []reflect.SelectCase{
-		// #0: <-md.die
-		{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(md.die),
-		},
-		// #1: <-md.addVar
-		{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(md.addVar),
-		},
-		// #2: <-md.dropVar
-		{
-			Dir:  reflect.SelectRecv,
-			Chan: reflect.ValueOf(md.dropVar),
-		},
-	}
-
-	for {
-		chosen, val, closedChan := reflect.Select(cases)
-		if closedChan {
-			glog.Infof("send to monitor %s stopped", md.name)
-			return
-		}
-		switch chosen {
-		case die:
-			glog.Infof("send to monitor %s stopped", md.name)
-			return
-		case add:
-			v := val.Interface().(transport.Subscribe)
-			expVar := getRegistry()[v.Name]
-			if expVar == nil {
-				// TODO(johnsiilver): Really consider informing the monitor of this issue instead of just logging it.
-				glog.Errorf("monitor %v asked to monitor %s, which isn't registered", md.name, v.Name)
-				continue
-			}
-			if err := handleSubscribes(md, v.Name, expVar, v.Interval, results); err != nil {
-				// TODO(johnsiilver): Really consider informing the monitor of this issue instead of just logging it.
-				glog.Errorf("monitor %v asked to monitor %s, but had error: %s", md.name, v.Name, err)
-				continue
-			}
-		case drop:
-			v := val.Interface().(transport.Drop)
-			// TODO(johnsiilver): Refactor into a method.
-			func() {
-				md.Lock()
-				defer md.Unlock()
-				l := md.loopers[v.Name]
-				if l == nil {
-					glog.Infof("monitor %v asked drop %s, but it didn't exist", md.name, v.Name)
-					return
-				}
-				l.i.cancel()
-				delete(md.loopers, v.Name)
-			}()
-		}
-	}
 }
 
 // monitorWriter writes to a monitor when it receives an update for a variable.

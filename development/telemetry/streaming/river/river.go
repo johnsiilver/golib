@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/golang/glog"
 )
 
 var (
@@ -20,15 +22,11 @@ var (
 )
 
 func getRegistry() map[string]expvar.Var {
-	switch t := registry.Load().(type) {
-	case nil:
+	m := registry.Load()
+	if m == nil {
 		return nil
-	case map[string]expvar.Var:
-		return t
-	default:
-		log.Panicf("registry it storing an unknown type %T", t)
 	}
-	panic("can't get here")
+	return m.(map[string]expvar.Var)
 }
 
 // Publish declares a named exported variable. This should be called from a
@@ -71,6 +69,7 @@ func Publish(name string, v expvar.Var) {
 	}
 
 	r[name] = v
+	glog.Infof("registering variable %s of type %T", name, v)
 	registry.Store(r)
 }
 

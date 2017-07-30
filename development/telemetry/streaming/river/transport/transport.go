@@ -36,6 +36,22 @@ type Operation struct {
 
 	// Drop contains data if the Type == DropOp.
 	Drop Drop
+
+	// Response is the response to this operation. If it its nil, then it
+	// succeeded. Otherwise there was a failure.
+	Response chan error
+}
+
+// Validate validates the operation has the correct attributes et.
+func (o Operation) Validate() error {
+	switch o.Type {
+	case SubscribeOp:
+		return o.Subscribe.Validate()
+	case DropOp:
+		return o.Drop.Validate()
+	default:
+		panic("unknown OpType to Validate()")
+	}
 }
 
 // Subscribe describes a monitors attempt to subscribe to a variable.
@@ -155,8 +171,6 @@ type Var struct {
 type RiverTransport interface {
 	// Connect connects to the remote monitor.
 	Connect() error
-	// State returns the current MonitorProblem.
-	Issue() <-chan error
 	// Receive returns a channel that we read Operations from.
 	Receive() <-chan Operation
 	// Send sends a variable to the monitor.
