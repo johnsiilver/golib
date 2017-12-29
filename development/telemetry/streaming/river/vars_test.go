@@ -14,6 +14,10 @@ import (
 	"github.com/kylelemons/godebug/pretty"
 )
 
+func init() {
+	SetID(makeID("fakeApp", 0, 0))
+}
+
 // TestRiverVar makes sure that all our types conform to river.Var.
 func TestRiverVar(t *testing.T) {
 	_ = []Var{

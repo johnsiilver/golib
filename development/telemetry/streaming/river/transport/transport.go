@@ -179,13 +179,25 @@ type RiverTransport interface {
 	Close()
 }
 
+// IdentityVar is a variable sent from an Identity.
+type IdentityVar struct {
+	// ID is an identity for an application instance talking to a monitor.
+	ID string
+	// Var is the variable sent to the monitor from the Identity.
+	Var Var
+}
+
 // MonitorTransport is implemented by a monitor to be able to receive data
 // from a river application.
 type MonitorTransport interface {
-	// Subscribe subscribes the monitor to start receiving variables.
-	Subscribe(vars []string) error
-	// Drop drops variables from being monitored.
-	Drop(vars []string) error
+	// Listen allows for the transport to start listening for connections.
+	Listen(hostPort string) error
+	// Subscribe subscribes the monitor to start receiving a variable.
+	Subscribe(id string, v string) error
+	// Drop drops s variable from being monitored.
+	Drop(id string, vars string) error
 	// Receive a variable that has changed from a river instance.
-	Receive() <-chan Var
+	Receive() <-chan IdentityVar
+	// Close closes the Transport's connection.
+	Close()
 }

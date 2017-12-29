@@ -17,6 +17,33 @@ import (
 	"github.com/johnsiilver/golib/development/telemetry/streaming/river/transport"
 )
 
+type myID struct {
+	app      string
+	pod      int
+	instance int
+}
+
+func (m myID) Attributes() []IDAttr {
+	return []IDAttr{
+		{
+			Field: "App",
+			Value: m.app,
+		},
+		{
+			Field: "Pod",
+			Value: fmt.Sprintf("%d", m.pod),
+		},
+		{
+			Field: "Instance",
+			Value: fmt.Sprintf("%d", m.instance),
+		},
+	}
+}
+
+func makeID(app string, pod, instance int) myID {
+	return myID{app: app, pod: pod, instance: instance}
+}
+
 func TestInterval(t *testing.T) {
 	d := data.VarState{Int: 1}
 	store, err := boutique.New(d, modifiers.All, nil)
@@ -58,7 +85,6 @@ func TestInterval(t *testing.T) {
 
 type fakeTransport struct {
 	connectErr bool
-	issues     chan error
 	receive    chan transport.Operation
 	toMonitor  chan data.VarState
 }
@@ -66,7 +92,6 @@ type fakeTransport struct {
 func newFakeTransport() *fakeTransport {
 	return &fakeTransport{
 		connectErr: false,
-		issues:     make(chan error, 1),
 		receive:    make(chan transport.Operation, 1),
 		toMonitor:  make(chan data.VarState, 1),
 	}
@@ -77,10 +102,6 @@ func (f *fakeTransport) Connect() error {
 		return errors.New("connect error")
 	}
 	return nil
-}
-
-func (f *fakeTransport) Issue() <-chan error {
-	return f.issues
 }
 
 func (f *fakeTransport) Receive() <-chan transport.Operation {
@@ -103,10 +124,6 @@ func (f *fakeTransport) Close() {
 ////////////////////////
 // These are to allow us to pretend we are the monitor.
 ///////////////////////
-func (f *fakeTransport) SendIssue(err error) {
-	f.issues <- err
-}
-
 func (f *fakeTransport) Operation(op transport.Operation) error {
 	f.receive <- op
 	return <-op.Response
@@ -114,6 +131,8 @@ func (f *fakeTransport) Operation(op transport.Operation) error {
 
 func TestMonitorData(t *testing.T) {
 	const interval = 5 * time.Second
+
+	SetID(makeID("fakeApp", 0, 0))
 
 	myInt := MakeInt(0)
 	myString := MakeString("")

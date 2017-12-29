@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	rMu      sync.Mutex   // Protects everything below.
+	// monitors is protected by regMu in river.go
 	monitors atomic.Value // map[string]*monitorData
 )
 
@@ -268,8 +268,12 @@ func getMonitors() map[string]*monitorData {
 // we cannot connect.  Connecting will only be attempted for the lifetime of
 // ctx (by default this is infinity).
 func RegisterMonitor(ctx context.Context, dest string, t transport.RiverTransport) error {
-	rMu.Lock()
-	defer rMu.Unlock()
+	regMu.Lock()
+	defer regMu.Unlock()
+
+	if globalID == nil {
+		panic("must call SetID() before RegisterMonitor()")
+	}
 
 	m := getMonitors()
 	if m == nil {
@@ -288,8 +292,8 @@ func RegisterMonitor(ctx context.Context, dest string, t transport.RiverTranspor
 
 // RemoveMonitor removes all monitors
 func RemoveMonitor(dest string) {
-	rMu.Lock()
-	defer rMu.Unlock()
+	regMu.Lock()
+	defer regMu.Unlock()
 
 	m := getMonitors()
 
