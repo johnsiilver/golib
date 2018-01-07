@@ -92,7 +92,7 @@ func (d *Stack) Size() int {
   return int(atomic.LoadInt64(&d.size))
 }
 
-// Pop returns the last data that was on the stack and puts it in data.  data must be
+// Pop returns the last stored value that was on the stack and puts it in data.  data must be
 // a pointer type (even to reference types) and must either be the same type as was
 // passed via New() or a pointer to that type.  If ok == false and err == nil,
 // it indicates the stack was empty.
@@ -104,12 +104,12 @@ func (d *Stack) Pop(data interface{}) (ok bool, err error) {
 		return false, fmt.Errorf("cannot pop stored data of type %s into type %T", d.storedType, data)
 	}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if atomic.LoadInt64(&d.length) == 0 {
+  if atomic.LoadInt64(&d.length) == 0 {
 		return false, nil
 	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
 	if err := d.readData(data); err != nil {
 		return false, err
