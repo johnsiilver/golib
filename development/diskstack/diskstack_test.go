@@ -50,7 +50,7 @@ func TestSimple(t *testing.T) {
 
 func TestStack(t *testing.T) {
 	const (
-		count = 10000
+		count = 100000
 		p     = "./stack_tmp"
 	)
 
@@ -100,7 +100,7 @@ func TestStack(t *testing.T) {
 				}
 
 				if !ok {
-					time.Sleep(1 * time.Second)
+					time.Sleep(10 * time.Millisecond)
 					continue
 				}
 				v[n] = true
@@ -138,7 +138,7 @@ func TestStack(t *testing.T) {
 }
 
 func TestGoque(t *testing.T) {
-	const count = 10000
+	const count = 100000
 
 	s, err := goque.OpenStack("./data_dir")
 	if err != nil {
