@@ -1,8 +1,7 @@
-package diskstack
+package diskstack2
 
 import (
 	"log"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +16,7 @@ func init() {
 	}()
 }
 
+/*
 func TestSimple(t *testing.T) {
 	const p = "./stack_tmp"
 
@@ -55,35 +55,19 @@ func TestSimple(t *testing.T) {
 		t.Fatalf("TestSimple: got %d, want 123", n)
 	}
 }
+*/
 
 func TestStack(t *testing.T) {
 	const (
 		count = 100000
-		p     = "./stack_tmp"
+		p     = "./tmp_dir"
 	)
-
-	// Remove the test file if it somehow exists.
-	_, err := os.Stat(p)
-	if err == nil {
-		if err := os.Remove(p); err != nil {
-			t.Fatalf("TestStack: test file exists and could not be deleted: %s", err)
-		}
-	}
-
-	// Remove the test file before closing.
-	defer os.Remove(p)
 
 	d, err := New(p, int(0))
 	if err != nil {
 		t.Fatalf("TestStack: %s", err)
 	}
 	defer d.Close()
-
-	fi, err := os.Stat(p)
-	if err != nil {
-		t.Fatalf("TestStack: could not stat the file: %s", err)
-	}
-	sizeWithHeader := fi.Size()
 
 	// Push count integers onto the stack and read count integers off the stack
 	// and mark it received into a []bool.
@@ -124,20 +108,6 @@ func TestStack(t *testing.T) {
 		if !ok {
 			t.Errorf("TestStack: entry %d was not seen", i)
 		}
-	}
-
-	// Make sure the size of the file was 0.
-	stat, err := os.Stat(p)
-	if err != nil {
-		t.Errorf("TestStack: could not stat %s: %s", p, err)
-	}
-	if stat.Size() != sizeWithHeader {
-		t.Errorf("TestStack: file size should be 0 at the end, was: %v", stat.Size())
-	}
-
-	// Make sure our internal counters agree.
-	if d.Size() != int(sizeWithHeader) {
-		t.Errorf("TestStack: .Size(): got %d, want 0", d.Size())
 	}
 
 	if d.Len() != 0 {

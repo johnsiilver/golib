@@ -36,17 +36,16 @@ Usage:
 package diskstack
 
 import (
-	//"bufio"
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
 	"fmt"
-  "io"
+	"io"
 	"os"
 	"reflect"
 	"sync"
-  "sync/atomic"
-  "time"
+	"sync/atomic"
+	"time"
 
 	"github.com/golang/glog"
 )
@@ -61,99 +60,99 @@ const internalVersion = 1
 // VersionInfo is used to encode version information for the disk stack into
 // our files.  This struct can never have a field removed only added.
 type VersionInfo struct {
-  // Version is the version of encoding used to by stack to encode this.
-  // This is not the same as the Semantic Version of the code.
-  Version uint64
-  // Created is when the file was actually created.
-  Created int64
+	// Version is the version of encoding used to by stack to encode this.
+	// This is not the same as the Semantic Version of the code.
+	Version uint64
+	// Created is when the file was actually created.
+	Created int64
 }
 
 // Encode encodes the VersionInfo to the start of a file. If an error returns
 // the file will be truncated to 0.
 func (v VersionInfo) encode(f *os.File) (n int, err error) {
-  defer func() {
-    if err != nil {
-      f.Truncate(0)
-      f.Seek(0,0)
-    }
-    f.Sync()
-  }()
+	defer func() {
+		if err != nil {
+			f.Truncate(0)
+			f.Seek(0, 0)
+		}
+		f.Sync()
+	}()
 
-  if _, err = f.Seek(0,0); err != nil {
-    return 0, fmt.Errorf("could not seek the beginning of the file: %s", err)
-  }
+	if _, err = f.Seek(0, 0); err != nil {
+		return 0, fmt.Errorf("could not seek the beginning of the file: %s", err)
+	}
 
-  buff := bytes.NewBuffer([]byte{})
-  enc := gob.NewEncoder(buff)
+	buff := bytes.NewBuffer([]byte{})
+	enc := gob.NewEncoder(buff)
 
 	// Write our data to the buffer.
 	if err = enc.Encode(v); err != nil {
 		return 0, fmt.Errorf("could not gob encode the data: %s", err)
 	}
 
-  // Write our version number to disk.
-  b := make([]byte, int64Size)
-  binary.LittleEndian.PutUint64(b, v.Version)
-  if _, err = f.Write(b); err != nil {
-    return 0, fmt.Errorf("unable to write the version number to disk")
-  }
+	// Write our version number to disk.
+	b := make([]byte, int64Size)
+	binary.LittleEndian.PutUint64(b, v.Version)
+	if _, err = f.Write(b); err != nil {
+		return 0, fmt.Errorf("unable to write the version number to disk")
+	}
 
-  f.Seek(-int64Size, 2)
-  if _, err := f.Read(b); err != nil {
-    panic(err)
-  }
+	f.Seek(-int64Size, 2)
+	if _, err := f.Read(b); err != nil {
+		panic(err)
+	}
 
 	// Write our size header to disk.
-  l := buff.Len()
+	l := buff.Len()
 	binary.LittleEndian.PutUint64(b, uint64(l))
 	if _, err = f.Write(b); err != nil {
 		return 0, fmt.Errorf("unable to write data size to disk: %s", err)
 	}
 
-  f.Seek(-int64Size, 2)
-  if _, err := f.Read(b); err != nil {
-    panic(err)
-  }
+	f.Seek(-int64Size, 2)
+	if _, err := f.Read(b); err != nil {
+		panic(err)
+	}
 
-  // Write the buffer to disk.
-  if _, err = f.Write(buff.Bytes()); err != nil {
-    return 0, fmt.Errorf("unable to write our version info to disk: %s", err)
-  }
+	// Write the buffer to disk.
+	if _, err = f.Write(buff.Bytes()); err != nil {
+		return 0, fmt.Errorf("unable to write our version info to disk: %s", err)
+	}
 
-  return int(int64Size+int64Size+l), nil
+	return int(int64Size + int64Size + l), nil
 }
 
 func (v *VersionInfo) decode(f *os.File) error {
-  if _, err := f.Seek(0,0); err != nil {
-    return fmt.Errorf("could not seek the beginning of the file: %s", err)
-  }
+	if _, err := f.Seek(0, 0); err != nil {
+		return fmt.Errorf("could not seek the beginning of the file: %s", err)
+	}
 
-  // Read version number back.
-  b := make([]byte, int64Size)
-  if _, err := f.Read(b); err != nil {
-    return fmt.Errorf("cannot read the version number from the file: %s", err)
-  }
-  ver := binary.LittleEndian.Uint64(b)
-  if ver > internalVersion {
-    return fmt.Errorf("cannot read this file: current version number %d is greater than the libraries version number %d", ver, internalVersion)
-  }
+	// Read version number back.
+	b := make([]byte, int64Size)
+	if _, err := f.Read(b); err != nil {
+		return fmt.Errorf("cannot read the version number from the file: %s", err)
+	}
+	ver := binary.LittleEndian.Uint64(b)
+	if ver > internalVersion {
+		return fmt.Errorf("cannot read this file: current version number %d is greater than the libraries version number %d", ver, internalVersion)
+	}
 
-  // Read version block size.
-  if _, err := f.Read(b); err != nil {
-    return fmt.Errorf("cannot read the version block size back from the file: %s", err)
-  }
-  blockSize := binary.LittleEndian.Uint64(b)
+	// Read version block size.
+	if _, err := f.Read(b); err != nil {
+		return fmt.Errorf("cannot read the version block size back from the file: %s", err)
+	}
+	blockSize := binary.LittleEndian.Uint64(b)
 
-  b = make([]byte, blockSize)
-  if _, err := f.Read(b); err != nil {
-    return fmt.Errorf("cannot read the version block from the file: %s, err")
-  }
+	b = make([]byte, blockSize)
+	if _, err := f.Read(b); err != nil {
+		return fmt.Errorf("cannot read the version block from the file: %s, err")
+	}
 
-  dec := gob.NewDecoder(bytes.NewBuffer(b))
-  if err := dec.Decode(v); err != nil {
-    return fmt.Errorf("cannot convert the version block on disk into a VersionInfo struct: %s", err)
-  }
-  return nil
+	dec := gob.NewDecoder(bytes.NewBuffer(b))
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("cannot convert the version block on disk into a VersionInfo struct: %s", err)
+	}
+	return nil
 }
 
 // Stack implements a LIFO queue that can store a single object type that can
@@ -162,54 +161,70 @@ func (v *VersionInfo) decode(f *os.File) error {
 // All operations are thread-safe.
 type Stack struct {
 	storedType string
-	f      *os.File
-  rws    io.ReadWriteSeeker
+	f          *os.File
+	rws        io.ReadWriteSeeker
+	flush      bool
 
-  mu     sync.Mutex // Protects everything below.
-	length int64  // Only access with atomic operations.
-	size   int64  // Dito.
+	mu     sync.Mutex // Protects everything below.
+	length int64      // Only access with atomic operations.
+	size   int64      // Dito.
+}
+
+// Option provides an optional argument to New().
+type Option func(s *Stack)
+
+// NoFlush indicates to not flush every write to disk.  This increases speed but
+// at the cost of possibly losing a Push() or Pop().
+func NoFlush() Option {
+	return func(s *Stack) {
+		s.flush = false
+	}
 }
 
 // New creates a new instance of Stack.  p is the location of where to write the
 // stack.  The file must not exist.  dataType is the value that you will store
 // in the stack.  It must be gob encodable.  Also see Pop() for more information
 // on what can go here.
-func New(p string, dataType interface{}) (*Stack, error) {
+func New(p string, dataType interface{}, options ...Option) (*Stack, error) {
 	f, err := os.OpenFile(p, os.O_RDWR+os.O_CREATE+os.O_EXCL, 0666)
 	if err != nil {
 		return nil, err
 	}
 
-  vi := VersionInfo{Version: internalVersion, Created: time.Now().Unix()}
-  viLen, err := vi.encode(f)
-  if err != nil {
-    return nil, err
-  }
+	vi := VersionInfo{Version: internalVersion, Created: time.Now().Unix()}
+	viLen, err := vi.encode(f)
+	if err != nil {
+		return nil, err
+	}
 
-  if _, err := f.Seek(int64(viLen), 0); err != nil {
-    return nil, fmt.Errorf("cannot seek past the VersionInfo header we wrote")
-  }
+	if _, err := f.Seek(int64(viLen), 0); err != nil {
+		return nil, fmt.Errorf("cannot seek past the VersionInfo header we wrote")
+	}
 
-  s := &Stack{f: f, rws: f, length: 0, size: int64(viLen), storedType: reflect.TypeOf(dataType).Name()}
+	s := &Stack{flush: true, f: f, rws: f, length: 0, size: int64(viLen), storedType: reflect.TypeOf(dataType).Name()}
+
+	for _, o := range options {
+		o(s)
+	}
 
 	return s, nil
 }
 
 // Close closes the file backing the stack on disk.  This does not erase the file.
 func (d *Stack) Close() error {
-  return d.rws.(io.Closer).Close()
+	return d.rws.(io.Closer).Close()
 }
 
 // Len returns the amount of items currently on the stack.
 func (d *Stack) Len() int {
-  // Use atomic so that getting Len() is independent from our internal Mutex.
-  return int(atomic.LoadInt64(&d.length))
+	// Use atomic so that getting Len() is independent from our internal Mutex.
+	return int(atomic.LoadInt64(&d.length))
 }
 
 // Size returns the current size of the stack in bytes on disk.
 func (d *Stack) Size() int {
-  // Use atomic so that getting Size() is independent from our internal Mutex.
-  return int(atomic.LoadInt64(&d.size))
+	// Use atomic so that getting Size() is independent from our internal Mutex.
+	return int(atomic.LoadInt64(&d.size))
 }
 
 // Pop returns the last stored value that was on the stack and puts it in data.  data must be
@@ -227,9 +242,9 @@ func (d *Stack) Pop(data interface{}) (ok bool, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-  if atomic.LoadInt64(&d.length) == 0 {
-    return false, nil
-  }
+	if atomic.LoadInt64(&d.length) == 0 {
+		return false, nil
+	}
 
 	if err := d.readData(data); err != nil {
 		return false, err
@@ -255,7 +270,7 @@ func (d *Stack) readSize() int64 {
 	// Shrink the file by 8 bytes.
 	atomic.AddInt64(&d.size, -8)
 	d.f.Truncate(int64(d.Size()))
-  d.rws.Seek(-8, 2)
+	d.rws.Seek(-8, 2)
 
 	// Return the decoded size.
 	return int64(binary.LittleEndian.Uint64(b))
@@ -271,27 +286,27 @@ func (d *Stack) readData(data interface{}) error {
 	}
 
 	if _, err := d.rws.Seek(-n, 2); err != nil {
-    return fmt.Errorf("could not seek back to start of data(-%d bytes): %s", n, err)
-  }
+		return fmt.Errorf("could not seek back to start of data(-%d bytes): %s", n, err)
+	}
 
-  b := make([]byte, n)
-  rs, err := d.rws.Read(b)
-  if err != nil {
-    return fmt.Errorf("data size was %d, but encountered error trying to read that from disk: %s", err)
-  }
-  if int64(rs) != n {
-      d.f.Seek(int64(-rs), 1)
-      return fmt.Errorf("data size was %d, but only could read %d back", n, rs)
-  }
+	b := make([]byte, n)
+	rs, err := d.rws.Read(b)
+	if err != nil {
+		return fmt.Errorf("data size was %d, but encountered error trying to read that from disk: %s", err)
+	}
+	if int64(rs) != n {
+		d.f.Seek(int64(-rs), 1)
+		return fmt.Errorf("data size was %d, but only could read %d back", n, rs)
+	}
 
-  //read := byter{d.rws}
+	//read := byter{d.rws}
 	//read := bufio.NewReader(d.rws)
 	dec := gob.NewDecoder(bytes.NewBuffer(b))
 	if err := dec.Decode(data); err != nil {
 		return fmt.Errorf("could not decode the gob data: %s", err)
 	}
 
-	atomic.AddInt64(&d.size,  -n)
+	atomic.AddInt64(&d.size, -n)
 	d.f.Truncate(int64(d.Size()))
 	d.rws.Seek(-n, 2)
 
@@ -332,10 +347,13 @@ func (d *Stack) Push(data interface{}) error {
 		return fmt.Errorf("could not write to the file: %s", err)
 	}
 
-  atomic.AddInt64(&d.size, int64(n))
-  atomic.AddInt64(&d.length, 1)
+	atomic.AddInt64(&d.size, int64(n))
+	atomic.AddInt64(&d.length, 1)
 
-	d.f.Sync()
+	if d.flush {
+		d.f.Sync()
+	}
+
 	return nil
 }
 
