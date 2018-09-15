@@ -40,7 +40,7 @@ func (d *dispatcher) listen() {
         defer d.Unlock()
         d.routes[event.Name]<-struct{}{}
       case err := <-d.watcher.Errors:
-          log.Error("problem with filewatcher: %s", err)
+          log.Errorf("problem with filewatcher: %s", err)
       case <-d.closer:
         return
       }

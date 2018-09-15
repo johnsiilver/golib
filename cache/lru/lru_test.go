@@ -31,7 +31,7 @@ func TestLRU(t *testing.T) {
     }
 
     if v.(int) != i {
-      t.Fatalf("c.Get(%d) returned %d, want %d", v.(int), i)
+      t.Fatalf("c.Get(%d) returned %d, want %d", i, v.(int), i)
     }
   }
 

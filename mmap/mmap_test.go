@@ -269,7 +269,7 @@ func TestString(t *testing.T) {
   // Test we read the second line.
   str, err = m.ReadLine()
   if err != io.EOF {
-    t.Fatalf("got err == %q, want err == nil", err, io.EOF)
+    t.Fatalf("got err == %q, want err == nil", err)
   }
 
   log.Println(str)
