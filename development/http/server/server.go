@@ -49,7 +49,7 @@ import (
 	"net/http"
 
 	"github.com/golang/glog"
-	"github.com/johnsiilver/golib/http/server/registry"
+	"github.com/johnsiilver/golib/development/http/server/registry"
 )
 
 // Option is an optional argument to the New() constructor.

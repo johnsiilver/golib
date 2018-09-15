@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/johnsiilver/golib/http/server/registry"
+	"github.com/johnsiilver/golib/development/http/server/registry"
 )
 
 func TestServer(t *testing.T) {
