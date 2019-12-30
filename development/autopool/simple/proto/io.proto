@@ -2,13 +2,11 @@ syntax = "proto3";
 
 package input;
 
-// Input is the standard name for a Cog's input.
 message Input {
 	string first = 1;
 	string last = 2;
 };
 
-// Output is the standard name for a Cog's output.
 message Output {
 	uint64 id = 1;
 	bytes payload = 2;

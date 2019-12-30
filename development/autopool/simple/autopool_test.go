@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 
-	pb "github.com/johnsiilver/golib/autopool/proto"
+	pb "github.com/johnsiilver/golib/development/autopool/proto"
 )
 
 func init() {

@@ -1,0 +1,38 @@
+syntax = "proto2";
+
+package input.v2;
+
+message Input {
+	optional string user = 1;
+	optional string resc_uri = 2;
+};
+
+message User {
+	optional string first = 1;
+	optional string last = 2;
+	optional int64 id = 3;
+};
+
+message Resource {
+	optional string type = 1;
+	optional string uri = 2;
+	optional bytes payload = 3;
+};
+
+message Perms {
+	optional bool read = 1;
+	optional bool write = 2;
+	optional bool exec = 3;
+}; 
+
+// Output is the standard name for a Cog's output.
+message Output {
+	optional int64 id = 1;
+	optional User user = 2;
+	optional Resource resc = 3;
+	optional Perms perms = 4;
+};
+
+service Recorder {
+   rpc Record(Input) returns (Output) {}
+};
