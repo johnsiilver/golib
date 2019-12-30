@@ -3,7 +3,6 @@ package blend
 import (
 	"context"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -34,29 +33,31 @@ const (
 	tenMillion      = oneMillion * 10
 )
 
-func BenchmarkWithPoolGRPCv3(b *testing.B) {
-	benches := []struct {
-		name        string
-		numClients  int
-		buffSize    int
-		numRequests int
-	}{
-		/*
-			{"100 Clients/1K Buffer/100K Requests", 100, 1024, hundredThousand},
-			{"100 Clients/1K Buffer/1M Requests", 100, 1024, oneMillion},
-			{"100 Clients/8K Buffer/1M Requests", 100, 1024 * 8, oneMillion},
-			{"100 Clients/64K Buffer/1M Requests", 100, 1024 * 64, oneMillion},
-			{"100 Clients/128K Buffer/1M Requests", 100, 1024 * 128, oneMillion},
-			{"100 Clients/512K Buffer/1M Requests", 100, 1024 * 512, oneMillion},
-			{"100 Clients/1M Buffer/1M Requests", 100, 1024 * 1024, oneMillion},
-		*/
-		{"100 Clients/10M Buffer/1M Requests", 100, 1024 * 1024 * 10, oneMillion},
-		//{"100 Clients/1K Buffer/10M Requests", 100, 1024, tenMillion},
-	}
+var benches = []struct {
+	name        string
+	numClients  int
+	buffSize    int
+	numRequests int
+}{
+	// Note: Below 50K loops basically forever. This is somewhat abusing the benchmark system
+	// by benchmarking an entire gRPC process.  So stability becomes a factor for b.N below 50K
+	// and loops forever.
+	{"100 Clients/1K Buffer/100K Requests", 100, 1024, 100000},
+	//{"100 Clients/10K Buffer/100K Requests", 100, 1024 * 10, 100000},
+	//{"100 Clients/50K Buffer/10K Requests", 100, 1024 * 50, 10000},
+	//{"100 Clients/50K Buffer/100K Requests", 100, 1024 * 50, 100000},
+	//{"100 Clients/100K Buffer/10K Requests", 100, 1024 * 100, 10000},
+	//{"100 Clients/3M Buffer/10K Requests", 100, 1024 * 1024 * 3, 10000},
+}
 
+func BenchmarkWithPoolGRPCv3(b *testing.B) {
 	p := New()
-	p.Add(func() interface{} { return &pb.Output{} })   // Returns 0, but we are just going to statically use it.
-	p.Add(func() interface{} { return &pb.Resource{} }) // Returns 1, but we are just going to statically use it.
+	p.Add(
+		func() interface{} {
+			atomic.AddInt32(&p.misses, 1)
+			return &pb.Resource{}
+		},
+	) // Returns 0, but we are just going to statically use it.
 
 	for _, bm := range benches {
 		b.Run(bm.name, func(b *testing.B) {
@@ -69,25 +70,6 @@ func BenchmarkWithPoolGRPCv3(b *testing.B) {
 }
 
 func BenchmarkWithoutPoolGRPCv3(b *testing.B) {
-	benches := []struct {
-		name        string
-		numClients  int
-		buffSize    int
-		numRequests int
-	}{
-		/*
-			{"100 Clients/1K Buffer/100K Requests", 100, 1024, hundredThousand},
-			{"100 Clients/1K Buffer/1M Requests", 100, 1024, oneMillion},
-			{"100 Clients/8K Buffer/1M Requests", 100, 1024 * 8, oneMillion},
-			{"100 Clients/64K Buffer/1M Requests", 100, 1024 * 64, oneMillion},
-			{"100 Clients/128K Buffer/1M Requests", 100, 1024 * 128, oneMillion},
-			{"100 Clients/512K Buffer/1M Requests", 100, 1024 * 512, oneMillion},
-			{"100 Clients/1M Buffer/1M Requests", 100, 1024 * 1024, oneMillion},
-		*/
-		{"100 Clients/10M Buffer/1M Requests", 100, 1024 * 1024 * 10, oneMillion},
-		//{"100 Clients/1K Buffer/10M Requests", 100, 1024, tenMillion},
-	}
-
 	for _, bm := range benches {
 		b.Run(bm.name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
@@ -158,8 +140,9 @@ type grpcService struct {
 
 func newGRPC(pool *Pool, buffSize int) *grpcService {
 	return &grpcService{
-		p:    filepath.Join(os.TempDir(), uuid.New().String()),
-		pool: pool,
+		p:        filepath.Join(os.TempDir(), uuid.New().String()),
+		pool:     pool,
+		buffSize: buffSize,
 	}
 }
 
@@ -184,11 +167,7 @@ func (g *grpcService) id() uint64 {
 	return v - 1
 }
 
-var spool = &sync.Pool{
-	New: func() interface{} {
-		return &pb.Resource{}
-	},
-}
+var chunk = make([]byte, 64)
 
 func (g *grpcService) Record(ctx context.Context, in *pb.Input) (*pb.Output, error) {
 	id := g.id()
@@ -203,9 +182,7 @@ func (g *grpcService) Record(ctx context.Context, in *pb.Input) (*pb.Output, err
 			Last:  "Doe",
 			Id:    37,
 		}
-		//out.Resc = g.pool.Get(1).(*pb.Resource)
-		out.Resc = spool.Get().(*pb.Resource)
-		//runtime.SetFinalizer(out.Resc, func(o *pb.Resource) { spool.Put(o) })
+		out.Resc = g.pool.Get(0).(*pb.Resource)
 		out.Resc.Type = "file"
 		out.Resc.Uri = in.RescUri
 		out.Resc.Payload = out.Resc.Payload[0:0]
@@ -225,10 +202,16 @@ func (g *grpcService) Record(ctx context.Context, in *pb.Input) (*pb.Output, err
 		}
 	}
 
-	for i := 0; i < g.buffSize; i++ {
-		out.Resc.Payload = append(out.Resc.Payload, byte(rand.Int31()))
+	// Writes 64 bytes to our slice until we reach g.buffSize.
+	for {
+		size := len(out.Resc.Payload)
+		if size+64 < g.buffSize {
+			out.Resc.Payload = append(out.Resc.Payload, chunk...)
+			continue
+		}
+		out.Resc.Payload = append(out.Resc.Payload, make([]byte, g.buffSize-size)...)
+		break
 	}
-	spool.Put(out.Resc)
 
 	return out, nil
 }
