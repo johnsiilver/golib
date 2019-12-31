@@ -1,12 +1,27 @@
-package blend
+package autopool
+
+/*
+	Best way to run is:
+
+	time go test -run=xxx -bench=BenchmarkWithoutPoolGRPCv3
+	time go test -run=xxx -bench=BenchmarkWithPoolGRPCv3
+
+	You can uncomment and comment different table driven benchmarks at var benches.
+
+	Note: Some combinations will cause b.N to go on forever. This is somewhat abusing the benchmark system
+	by benchmarking an entire gRPC process.  So stability becomes a factor when buffers are less 50K
+	without upping the number of requests.
+*/
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -20,6 +35,8 @@ import (
 
 	_ "net/http/pprof"
 )
+
+var testNum = flag.Int("testnum", -1, "The benchmark test number to run")
 
 func init() {
 	go func() {
@@ -39,44 +56,34 @@ var benches = []struct {
 	buffSize    int
 	numRequests int
 }{
-	// Note: Below 50K loops basically forever. This is somewhat abusing the benchmark system
-	// by benchmarking an entire gRPC process.  So stability becomes a factor for b.N below 50K
-	// and loops forever.
 	{"100 Clients/1K Buffer/100K Requests", 100, 1024, 100000},
-	//{"100 Clients/10K Buffer/100K Requests", 100, 1024 * 10, 100000},
-	//{"100 Clients/50K Buffer/10K Requests", 100, 1024 * 50, 10000},
-	//{"100 Clients/50K Buffer/100K Requests", 100, 1024 * 50, 100000},
-	//{"100 Clients/100K Buffer/10K Requests", 100, 1024 * 100, 10000},
-	//{"100 Clients/3M Buffer/10K Requests", 100, 1024 * 1024 * 3, 10000},
+	{"100 Clients/10K Buffer/100K Requests", 100, 1024 * 10, 100000},
+	{"100 Clients/50K Buffer/10K Requests", 100, 1024 * 50, 10000},
+	{"100 Clients/50K Buffer/100K Requests", 100, 1024 * 50, 100000},
+	{"100 Clients/100K Buffer/10K Requests", 100, 1024 * 100, 10000},
+	{"100 Clients/100K Buffer/100K Requests", 100, 1024 * 100, 100000},
+	{"100 Clients/3M Buffer/10K Requests", 100, 1024 * 1024 * 3, 10000},
 }
 
 func BenchmarkWithPoolGRPCv3(b *testing.B) {
 	p := New()
-	p.Add(
-		func() interface{} {
-			atomic.AddInt32(&p.misses, 1)
-			return &pb.Resource{}
-		},
-	) // Returns 0, but we are just going to statically use it.
+	p.Add(reflect.TypeOf(&pb.Resource{})) // Returns 0, but we are just going to statically use it.
 
-	for _, bm := range benches {
-		b.Run(bm.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				GRPCBenchmark(b, p, bm.buffSize, bm.numClients, bm.numRequests)
-			}
-		})
-		log.Printf("%d/%d(attempts/misses)", p.attempts, p.misses)
-	}
+	bm := benches[*testNum]
+	b.Run(bm.name, func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			GRPCBenchmark(b, p, bm.buffSize, bm.numClients, bm.numRequests)
+		}
+	})
 }
 
 func BenchmarkWithoutPoolGRPCv3(b *testing.B) {
-	for _, bm := range benches {
-		b.Run(bm.name, func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				GRPCBenchmark(b, nil, bm.buffSize, bm.numClients, bm.numRequests)
-			}
-		})
-	}
+	bm := benches[*testNum]
+	b.Run(bm.name, func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			GRPCBenchmark(b, nil, bm.buffSize, bm.numClients, bm.numRequests)
+		}
+	})
 }
 
 func GRPCBenchmark(b *testing.B, pool *Pool, buffSize, numClients, numRequests int) {
