@@ -112,6 +112,5 @@ func (p *Pool) Get(i int) interface{} {
 
 // put adds x to the pool.
 func (p *Pool) put(i int, x interface{}) {
-	runtime.SetFinalizer(x, nil)
 	p.pools[i].Put(x)
 }
