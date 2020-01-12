@@ -21,7 +21,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -67,7 +66,7 @@ var benches = []struct {
 
 func BenchmarkWithPoolGRPCv3(b *testing.B) {
 	p := New()
-	p.Add(reflect.TypeOf(&pb.Resource{})) // Returns 0, but we are just going to statically use it.
+	p.Add(func() interface{} { return &pb.Resource{} }) // Returns 0, but we are just going to statically use it.
 
 	bm := benches[*testNum]
 	b.Run(bm.name, func(b *testing.B) {
