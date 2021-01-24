@@ -7,7 +7,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/johnsiilver/golib/stack/diskstack"
+	"github.com/johnsiilver/golib/development/diskstack"
 	"github.com/pborman/uuid"
 )
 
