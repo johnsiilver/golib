@@ -5,10 +5,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnsiilver/golib/distlock"
+	"github.com/johnsiilver/golib/development/distlock"
 
-	etcd "github.com/coreos/etcd/clientv3"
-	"github.com/coreos/etcd/clientv3/concurrency"
+	etcd "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
 func init() {
