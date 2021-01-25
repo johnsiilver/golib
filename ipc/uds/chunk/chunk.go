@@ -5,7 +5,7 @@ A chunk client simply writes a variadic int to indicate the next message size to
 writes the message. On a read call it reads the int indicating the size and then reads in that
 amount of buffer.
 
-The chunk client can set a maximum message size for reads.
+The chunk client can set a maximum message size.
 
 If a read error occurs, the chunk client will close the connection.  Read errors should never occur in UDS.
 */
@@ -125,6 +125,12 @@ func (c *Client) Write(b []byte) error {
 
 	if len(b) == 0 {
 		return nil
+	}
+
+	if c.maxSize > 0 {
+		if len(b) > int(c.maxSize) {
+			return fmt.Errorf("message exceeds max size set")
+		}
 	}
 
 	n := binary.PutVarint(c.writeVarInt, int64(len(b)))
