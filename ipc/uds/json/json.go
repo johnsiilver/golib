@@ -2,7 +2,7 @@
 Package json provides a client that can be used on a *uds.Client or *uds.Conn to send streaming JSON values.
 This package uses chunk underneath and therefore expects the other side to understand its data format.
 
-This is for decoding a single message that can be made up of sub-messages. If you wish to
+This is for decoding a single message type that can be made up of sub-messages. If you wish to
 decode JSON dicts inside a dict stream or arbitrary JSON messages, simply wrap
 *uds.Client or *uds.Conn with json.Decoder instead of using this package.
 
