@@ -12,20 +12,17 @@ We also handle write only connections where Write() calls may not detect a close
 be done setting the WriteOnly option.
 
 This package is fairly straight forward in that you can uses server.Conn objects and Client objects
-as io.ReadWriteClose objects. We also provide higher level clients that wrap this for convenience.
-
-OSX Note:
-	NewServer() is unable to chown the socket if the containing directory doesn't have
-	a 0770 mask (operation not permitted). So opening in os.Tempdir() will fail.  You can simply
-	put a sub-directory with those perms and it will work.
+as io.ReadWriteClose objects. We also provide higher level clients that handle chunk data, a chunk data
+RPC client/server, json streams, json RPC client/server, ..
 
 Unix/Linux Note:
 	Socket paths may have a length limit that is different than the normal
 	filesystem. On OSX, you can receive "bind: invalid argument" when the name is too long.
 
-	On Linux there seems to be an 108 character for path names. https://github.com/golang/go/issues/6895 .
+	On Linux there seems to be an 108 character limit for socket path names.
+	https://github.com/golang/go/issues/6895 .
 	I have set this as the default limit for all clients so I don't have to figure out the limit on
-	every type of system and interpret non-sensical errors (invalid argument doesn't mean all that much).
+	every type of system and interpret non-sensical errors.
 */
 package uds
 
