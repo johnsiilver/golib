@@ -84,23 +84,22 @@ func SharedPool(pool *sync.Pool) Option {
 }
 
 // New is the constructor for Client. rwc must be a *uds.Client or *uds.Conn.
-func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
-	var client *Client
-
-	switch rwc.(type) {
-	case *uds.Client, *uds.Conn:
-		client = &Client{
-			rwc:     rwc,
-			pending: map[uint32]chan payload{},
-			chPool: &sync.Pool{
-				New: func() interface{} {
-					return make(chan payload, 1)
-				},
-			},
-		}
-	default:
-		return nil, fmt.Errorf("rwc was not a *uds.Client or *uds.Server, was %T", rwc)
+func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Option) (*Client, error) {
+	rwc, err := uds.NewClient(socketAddr, uid, gid, fileModes)
+	if err != nil {
+		return nil, err
 	}
+
+	var client = &Client{
+		rwc:     rwc,
+		pending: map[uint32]chan payload{},
+		chPool: &sync.Pool{
+			New: func() interface{} {
+				return make(chan payload, 1)
+			},
+		},
+	}
+
 	for _, o := range options {
 		o(client)
 	}
@@ -118,6 +117,8 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 		return nil, err
 	}
 	client.chunker = chunker
+
+	go client.readAndRoute()
 
 	return client, nil
 }
@@ -183,7 +184,9 @@ func (c *Client) Call(ctx context.Context, method string, req []byte, resp *[]by
 	p = payload{} // Content not needed, so lets eliminate any data we don't need around
 
 	payCh := c.chPool.Get().(chan payload)
+	c.mu.Lock()
 	c.pending[id] = payCh
+	c.mu.Unlock()
 
 	if err := c.chunker.Write(b); err != nil {
 		c.rwc.Close()
@@ -227,7 +230,9 @@ func (c *Client) readAndRoute() {
 			log.Printf("received a set of bytes that could not be unmarshalled to a payload:\n%s", string(buff.Bytes()))
 			continue
 		}
+		c.mu.Lock()
 		ch := c.pending[p.ID]
+		c.mu.Unlock()
 		// This happends if the call has already met a deadline, so we just drop this.
 		if ch == nil {
 			continue
@@ -292,7 +297,7 @@ func (s *Server) Start() error {
 			return s.udsServ.Close()
 		case conn := <-s.udsServ.Conn():
 			// TODO(jdoak): This is naive, needs to be in a reusable pool.
-			go s.handleRequests(&conn)
+			go s.handleRequests(conn)
 		}
 	}
 }
@@ -358,8 +363,9 @@ func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.C
 	defer chunker.Recycle(req)
 
 	p := payload{}
+
 	if err := json.Unmarshal(req.Bytes(), &p); err != nil {
-		log.Printf("got payload that could not be unmarshalled: %s", string(req.Bytes()))
+		servErrorf(chunker, p.ID, ETBadData, fmt.Errorf("got payload that could not be unmarshalled: %s", string(req.Bytes())))
 		return
 	}
 
@@ -372,32 +378,21 @@ func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.C
 	ctx = context.WithValue(ctx, credKey, conn.Cred)
 	defer cancel()
 
-	select {
-	case <-ctx.Done():
-		// Nothing to do here, neither us or the other side is listening any longer.
+	resp, err := h(ctx, p.Data)
+	if err != nil {
+		servErrorf(chunker, p.ID, ETMethodNotFound, err)
 		return
-	case hr := <-handlerWrap(ctx, p.Data, h):
-		if hr.err != nil {
-			servErrorf(chunker, p.ID, ETMethodNotFound, hr.err)
-			return
-		}
-		if err := chunker.Write(hr.resp); err != nil {
-			return
-		}
 	}
-}
 
-type handlerResp struct {
-	resp []byte
-	err  error
-}
-
-func handlerWrap(ctx context.Context, req []byte, h RequestHandler) chan handlerResp {
-	ch := make(chan handlerResp, 1)
-	hr := handlerResp{}
-	hr.resp, hr.err = h(ctx, req)
-	ch <- hr
-	return ch
+	p.Data = resp // Just reuse the send payload, just replace the data.
+	buff, err := json.Marshal(p)
+	if err != nil {
+		servErrorf(chunker, p.ID, ETServer, fmt.Errorf("could not marshal they payload: %s", err))
+		return
+	}
+	if err := chunker.Write(buff); err != nil {
+		return
+	}
 }
 
 func servErrorf(chunker *chunk.Client, id uint32, code ErrType, err error) error {

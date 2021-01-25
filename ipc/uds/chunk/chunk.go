@@ -32,6 +32,8 @@ type Client struct {
 	readVarInt  []byte
 
 	maxSize int64
+
+	readMu, writeMu sync.Mutex
 }
 
 // Option is an optional argument to New.
@@ -89,6 +91,9 @@ func (c *Client) Recycle(b *bytes.Buffer) {
 
 // Read reads the next message from the socket.
 func (c *Client) Read() (*bytes.Buffer, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
 	size, err := binary.ReadVarint(c.rwc.(io.ByteReader))
 	if err != nil {
 		c.rwc.Close()
@@ -115,6 +120,9 @@ func (c *Client) Read() (*bytes.Buffer, error) {
 
 // Write writes b as a chunk into the socket.
 func (c *Client) Write(b []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	if len(b) == 0 {
 		return nil
 	}
@@ -125,6 +133,6 @@ func (c *Client) Write(b []byte) error {
 		c.rwc.Close()
 		return err
 	}
-	_, err = c.rwc.Write(b)
+	n, _ = c.rwc.Write(b)
 	return err
 }

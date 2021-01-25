@@ -7,7 +7,7 @@ least for the server. This could be used to build a "reflect" type of net/rpc se
 or to generate a service package like gRPC does.
 
 A simple client example (based on the server below):
-	client, err := New(pathToSocket)
+	client, err := New(socketAddr, cred.UID.Int(), cred.GID.Int(), []os.FileMode{0770, 0771})
 	if err != nil {
 		// Do something
 	}
@@ -18,7 +18,7 @@ A simple client example (based on the server below):
 
 	retry:
 		if err := client.Call(ctx, "/math/sum", req, &resp); err != nil {
-			if Retryable(err) {
+			if chunkRPC.Retryable(err) {
 				// Okay, so you probably should do this in a for loop, but I wanted to use
 				// a label for the hell of it.
 				goto retry
@@ -34,7 +34,11 @@ A simple service works like:
 	type Error struct {
 		Msg string
 	}
+
 	func (e Error) AsError() error {
+		if e.Msg == "" {
+			return nil
+		}
 		return e
 	}
 	func (e Error) Error() string {
@@ -50,31 +54,32 @@ A simple service works like:
 		Err Error
 	}
 
-	type MathServer struct {}
+	type MathServer struct{}
 
-	func(m *MyServer) Sum(ctx context.Context, req []byte) (resp []byte, error) {
-		request := AddReq{}
+	func (m *MathServer) Sum(ctx context.Context, req []byte) ([]byte, error) {
+		request := SumReq{}
 		if err := json.Unmarshal(req, &request); err != nil {
-			return nil, chunkRPC.Errorf(ETBadData, "request could not be unmarshalled into AddReq: %s", err)
+			return nil, chunkRPC.Errorf(chunkRPC.ETBadData, "request could not be unmarshalled into SumReq: %s", err)
 		}
 
-		response := AddResp{}
+		response := SumResp{}
 		for _, i := range request.Ints {
-			resp.Sum += i
+			response.Sum += i
 		}
 		b, err := json.Marshal(response)
 		if err != nil {
-			return nil, chunkRPC.Errorf(ETBadData, "request could not be unmarshalled into AddReq: %s", err)
+			return nil, chunkRPC.Errorf(chunkRPC.ETBadData, "request could not be unmarshalled into SumReq: %s", err)
 		}
 		return b, nil
 	}
 
 	func main() {
-		user, err := uds.Current()
+		cred, err := uds.Current()
 		if err != nil {
 			panic(err)
 		}
-		serv, err := NewServer("socketAddr", user.UID, user.GID, 0770)
+
+		serv, err := NewServer("socketAddr", cred.UID.Int(), cred.GID.Int(), 0770)
 		if err != nil {
 			panic(err)
 		}
@@ -88,8 +93,8 @@ A simple service works like:
 		}
 	}
 
-Note: The server only returns errors to clients when something goes wrong. This makes it
-predictable on the server side when the error is retryable. When the service
+Note: The server should only return errors to clients when something goes wrong with the RPC.
+This makes it predictable on the server side when the error is retryable. When the service
 has an error, I recommend returning the expected response, which should have a dict containing
 your custom error code and the error message. This allows your clients to decide if they
 should retry a request.
@@ -101,13 +106,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"reflect"
 	"sync"
 
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/chunk/rpc"
+	chunkRPC "github.com/johnsiilver/golib/ipc/uds/chunk/rpc"
 )
 
 // Client provides an RPC client using JSON.
@@ -138,19 +143,12 @@ func SharedPool(pool *sync.Pool) Option {
 	}
 }
 
-// New is the constructor for Client. rwc must be a *uds.Client or *uds.Conn.
-func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
-	switch rwc.(type) {
-	case *uds.Client, *uds.Conn:
-	default:
-		return nil, fmt.Errorf("rwc was not a *uds.Client or *uds.Server, was %T", rwc)
-	}
-
+// New is the constructor for Client. rwc must be a *uds.Client.
+func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Option) (*Client, error) {
 	client := &Client{}
 	for _, o := range options {
 		o(client)
 	}
-
 	if client.pool == nil {
 		client.pool = &sync.Pool{
 			New: func() interface{} {
@@ -158,7 +156,8 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 			},
 		}
 	}
-	cc, err := rpc.New(rwc, rpc.MaxSize(client.maxSize), rpc.SharedPool(client.pool))
+
+	cc, err := chunkRPC.New(socketAddr, uid, gid, fileModes, chunkRPC.MaxSize(client.maxSize), chunkRPC.SharedPool(client.pool))
 	if err != nil {
 		return nil, err
 	}

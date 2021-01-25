@@ -49,7 +49,7 @@ func TestClient(t *testing.T) {
 
 	servConn := <-udsServ.Conn()
 
-	serv, err := New(&servConn)
+	serv, err := New(servConn)
 	if err != nil {
 		panic(err)
 	}

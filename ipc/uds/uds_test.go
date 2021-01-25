@@ -61,7 +61,7 @@ func TestUDS(t *testing.T) {
 
 			go func() {
 				defer currentConns.Done()
-				dec := json.NewDecoder(&conn)
+				dec := json.NewDecoder(conn)
 				m := Cred{}
 				for {
 					if err := dec.Decode(&m); err != nil {

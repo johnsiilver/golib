@@ -202,7 +202,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 }
 
 // Close implements io.Closer.Close().
-func (c Conn) Close() error {
+func (c *Conn) Close() error {
 	return c.conn.Close()
 }
 
@@ -211,7 +211,7 @@ type Server struct {
 	l       *net.UnixListener
 	oneByte []byte
 	errCh   chan error
-	connCh  chan Conn
+	connCh  chan *Conn
 }
 
 // NewServer creates a new UDS server that creates and listens to the file at socketPath. uid and gid are
@@ -268,7 +268,7 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 		l:       l.(*net.UnixListener),
 		oneByte: make([]byte, 1),
 		errCh:   make(chan error, 1),
-		connCh:  make(chan Conn, 1),
+		connCh:  make(chan *Conn, 1),
 	}
 	go serv.accept()
 	return serv, nil
@@ -276,7 +276,7 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 
 // Conn returns a channel that is populated with connection to the server. The channel is closed
 // when the server's is no longer serving.
-func (c *Server) Conn() chan Conn {
+func (c *Server) Conn() chan *Conn {
 	return c.connCh
 }
 
@@ -317,7 +317,7 @@ func (c *Server) accept() {
 				conn.Close()
 				continue
 			}
-			c.connCh <- Conn{conn: uc, Cred: cred}
+			c.connCh <- &Conn{conn: uc, Cred: cred}
 		}
 	}()
 }
