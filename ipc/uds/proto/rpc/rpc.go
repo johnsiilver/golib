@@ -1,10 +1,5 @@
 /*
-Package rpc provides a json RPC service. This should not be confused with the standards
-based JSON-RPC 1.0/2.0/... This is a specific implementation over chunked data in UDS.
-
-This package bears more resemblence to net/http than to the net/rpc/json package, at
-least for the server. This could be used to build a "reflect" type of net/rpc service
-or to generate a service package like gRPC does.
+Package rpc provides a proto RPC service.
 
 A simple client example (based on the server below):
 	client, err := New(socketAddr, cred.UID.Int(), cred.GID.Int(), []os.FileMode{0770, 0771})
@@ -13,62 +8,39 @@ A simple client example (based on the server below):
 	}
 
 	ctx, cancel := context.WitheTimeout(5 * time.Second)
-	req := server.SumReq{Ints: 1, 2, 3}
-	resp := server.SumResp
+	req := &pb.SumReq{Ints: 1, 2, 3}
+	resp := &pb.SumResp{}
 
 	retry:
-		if err := client.Call(ctx, "/math/sum", req, &resp); err != nil {
-			if chunkRPC.Retryable(err) {
+		if err := client.Call(ctx, "/math/sum", req, resp); err != nil {
+			if rpc.Retryable(err) {
 				// Okay, so you probably should do this in a for loop, but I wanted to use
 				// a label for the hell of it.
 				goto retry
 			}
 			// Do something here, cause you have a non-retryable error.
 		}
-		if resp.Err.AsError() != nil {
+		if resp.Err != nil {
 			// Do something with the internal error.
 		}
 		fmt.Printf("Sum of %#v = %d\n", req, resp.Sum)
 
 A simple service works like:
-	type Error struct {
-		Msg string
-	}
-
-	func (e Error) AsError() error {
-		if e.Msg == "" {
-			return nil
-		}
-		return e
-	}
-	func (e Error) Error() string {
-		return e.Msg
-	}
-
-	type SumReq struct {
-		Ints []int
-	}
-
-	type SumResp struct {
-		Sum int
-		Err Error
-	}
-
 	type MathServer struct{}
 
-	func (m *MathServer) Sum(ctx context.Context, req []byte) ([]byte, error) {
-		request := SumReq{}
-		if err := json.Unmarshal(req, &request); err != nil {
-			return nil, chunkRPC.Errorf(chunkRPC.ETBadData, "request could not be unmarshalled into SumReq: %s", err)
+	func (m *MathServer) Sum(ctx context.Context, req []byte]) ([]byte, error) {
+		request := &pb.SumReq{}
+		if err := proto.Unmarshal(req, request); err != nil {
+			return nil, rpc.Errorf(rpc.ETBadData, "request could not be unmarshalled into SumReq: %s", err)
 		}
 
-		response := SumResp{}
+		response := &pb.SumResp{}
 		for _, i := range request.Ints {
 			response.Sum += i
 		}
-		b, err := json.Marshal(response)
+		b, err := proto.Marshal(response)
 		if err != nil {
-			return nil, chunkRPC.Errorf(chunkRPC.ETBadData, "request could not be unmarshalled into SumReq: %s", err)
+			return nil, rpc.Errorf(rpc.ETBadData, "request could not be unmarshalled into SumReq: %s", err)
 		}
 		return b, nil
 	}
@@ -104,20 +76,19 @@ package rpc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
 	"sync"
 
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/chunk/rpc"
-	chunkRPC "github.com/johnsiilver/golib/ipc/uds/chunk/rpc"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // Client provides an RPC client using JSON.
 type Client struct {
-	chunkRPC *rpc.Client
+	rpc *rpc.Client
 
 	pool    *sync.Pool // *bytes.Buffer
 	maxSize int64
@@ -143,7 +114,7 @@ func SharedPool(pool *sync.Pool) Option {
 	}
 }
 
-// New is the constructor for Client. rwc must be a *uds.Client.
+// New is the constructor for Client.
 func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Option) (*Client, error) {
 	client := &Client{}
 	for _, o := range options {
@@ -157,22 +128,22 @@ func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Op
 		}
 	}
 
-	cc, err := chunkRPC.New(socketAddr, uid, gid, fileModes, chunkRPC.MaxSize(client.maxSize), chunkRPC.SharedPool(client.pool))
+	cc, err := rpc.New(socketAddr, uid, gid, fileModes, rpc.MaxSize(client.maxSize), rpc.SharedPool(client.pool))
 	if err != nil {
 		return nil, err
 	}
-	client.chunkRPC = cc
+	client.rpc = cc
 
 	return client, nil
 }
 
 // Close closes the underyling connection.
 func (c *Client) Close() error {
-	return c.chunkRPC.Close()
+	return c.rpc.Close()
 }
 
 // Call calls the RPC service. If Context timeout is not set, will default to 5 minutes.
-func (c *Client) Call(ctx context.Context, method string, req, resp interface{}) error {
+func (c *Client) Call(ctx context.Context, method string, req, resp proto.Message) error {
 	if method == "" {
 		return fmt.Errorf("must pass non-empty method arge")
 	}
@@ -182,11 +153,8 @@ func (c *Client) Call(ctx context.Context, method string, req, resp interface{})
 	if resp == nil {
 		return fmt.Errorf("must pass non-nil resp arg")
 	}
-	if reflect.TypeOf(resp).Kind() != reflect.Ptr {
-		return fmt.Errorf("resp must be a pointer")
-	}
 
-	data, err := json.Marshal(req)
+	data, err := proto.Marshal(req)
 	if err != nil {
 		return err
 	}
@@ -202,11 +170,11 @@ func (c *Client) Call(ctx context.Context, method string, req, resp interface{})
 	defer c.pool.Put(buff)
 
 	respBytes := buff.Bytes()
-	if err := c.chunkRPC.Call(ctx, method, data, &respBytes); err != nil {
+	if err := c.rpc.Call(ctx, method, data, &respBytes); err != nil {
 		return err
 	}
 
-	if err := json.Unmarshal(respBytes, resp); err != nil {
+	if err := proto.Unmarshal(respBytes, resp); err != nil {
 		return rpc.Errorf(rpc.ETBadData, "could not unmarshal into response(%T):\n%s", resp, string(respBytes))
 	}
 	return nil
@@ -224,11 +192,12 @@ func CredFromCtx(ctx context.Context) uds.Cred {
 // returned error. See the note in the package intro.
 type RequestHandler = rpc.RequestHandler
 
-// Server provides an json RPC server.
+// Server provides a proto RPC server.
 type Server struct {
-	rpc      *rpc.Server
-	maxSize  int64
-	handlers map[string]RequestHandler
+	socketAddr string
+	rpc        *rpc.Server
+	maxSize    int64
+	handlers   map[string]RequestHandler
 }
 
 // NewServer is the constructor for a Server.
@@ -239,8 +208,9 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 	}
 
 	return &Server{
-		rpc:      serv,
-		handlers: map[string]RequestHandler{},
+		socketAddr: socketAddr,
+		rpc:        serv,
+		handlers:   map[string]RequestHandler{},
 	}, nil
 }
 

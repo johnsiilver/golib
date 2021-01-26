@@ -31,7 +31,9 @@ type Client struct {
 	writeVarInt []byte
 	readVarInt  []byte
 
-	maxSize int64
+	maxSize             int64
+	biggestReadMsgSize  int
+	biggestWriteMsgSize int
 
 	readMu, writeMu sync.Mutex
 }
@@ -89,6 +91,11 @@ func (c *Client) Recycle(b *bytes.Buffer) {
 	c.pool.Put(b)
 }
 
+const (
+	oneKiB = 1024
+	oneMiB = 1000 * 1024
+)
+
 // Read reads the next message from the socket.
 func (c *Client) Read() (*bytes.Buffer, error) {
 	c.readMu.Lock()
@@ -104,6 +111,20 @@ func (c *Client) Read() (*bytes.Buffer, error) {
 		if size > c.maxSize {
 			c.rwc.Close()
 			return nil, fmt.Errorf("message is larger than maximum size allowed")
+		}
+	}
+
+	// This adjusts our read buffer up to 10MiB. We don't go above that because we 10 clients =
+	// 100 MiB.
+	if size > int64(c.biggestReadMsgSize) {
+		c.biggestReadMsgSize = int(size)
+		if c.biggestReadMsgSize < oneMiB {
+			switch v := c.rwc.(type) {
+			case *uds.Conn:
+				v.UnixConn().SetReadBuffer(10 * c.biggestReadMsgSize)
+			case *uds.Client:
+				v.UnixConn().SetReadBuffer(10 * c.biggestReadMsgSize)
+			}
 		}
 	}
 
@@ -130,6 +151,20 @@ func (c *Client) Write(b []byte) error {
 	if c.maxSize > 0 {
 		if len(b) > int(c.maxSize) {
 			return fmt.Errorf("message exceeds max size set")
+		}
+	}
+
+	// This adjusts our read buffer up to 10MiB. We don't go above that because we 10 clients =
+	// 100 MiB.
+	if len(b) > c.biggestWriteMsgSize {
+		c.biggestWriteMsgSize = len(b)
+		if c.biggestReadMsgSize < oneMiB {
+			switch v := c.rwc.(type) {
+			case *uds.Conn:
+				v.UnixConn().SetWriteBuffer(10 * c.biggestReadMsgSize)
+			case *uds.Client:
+				v.UnixConn().SetWriteBuffer(10 * c.biggestReadMsgSize)
+			}
 		}
 	}
 

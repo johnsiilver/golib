@@ -64,14 +64,7 @@ func (m *MathServer) Sum(ctx context.Context, req []byte) ([]byte, error) {
 
 func TestClientServer(t *testing.T) {
 	// Get socket and user info.
-	socketAddr := filepath.Join(os.TempDir(), uuid.New().String(), "socket")
-	dirPath := filepath.Dir(socketAddr)
-	if err := os.MkdirAll(dirPath, 0777); err != nil {
-		panic(err)
-	}
-	defer func() {
-		os.RemoveAll(dirPath)
-	}()
+	socketAddr := filepath.Join(os.TempDir(), uuid.New().String())
 
 	cred, _, err := uds.Current()
 	if err != nil {
@@ -93,9 +86,10 @@ func TestClientServer(t *testing.T) {
 			log.Fatal(err)
 		}
 	}()
+	time.Sleep(1 * time.Second)
 
 	// Setup client
-	client, err := New(socketAddr, cred.UID.Int(), cred.GID.Int(), []os.FileMode{0770, 0771})
+	client, err := New(socketAddr, cred.UID.Int(), cred.GID.Int(), []os.FileMode{0770, 1770})
 	if err != nil {
 		panic(err)
 	}
