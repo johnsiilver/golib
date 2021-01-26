@@ -34,7 +34,7 @@ gRPC works great for IPC on UDS, at least with protos. While I love gRPC, I want
 
 So I certainly haven't benched everything. But I did bench the proto RPC, as it uses the chunking rpc package, which uses chunked streams. 
 
-I compared this to gRPC. Interestingly, they seem to handle the smallest data requests (1.0 kB) than this package, but this seems to be do better for all others. I think think in the small data size it is because I have a lot of memory pools for reuse and slightly more overhead in my packets.
+I compared this to gRPC. Interestingly, they seem to handle the smallest data requests (1.0 kB) better than this package, but this seems to be do better for all others. I think think in the small data size it is because I have a lot of memory pools for reuse and slightly more overhead in my packets.
 
 No matter what my internal settings, I would beat gRPC at 10kB and double their performance in the 102 kB size.  To get better performance in large sizes, I had to add some kernel buffer space over the defaults, which lead to close to double performance.
 

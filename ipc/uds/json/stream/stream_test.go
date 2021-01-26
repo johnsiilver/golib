@@ -1,4 +1,4 @@
-package json
+package stream
 
 import (
 	"io"

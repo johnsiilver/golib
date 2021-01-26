@@ -18,7 +18,7 @@ This handles streams beautifully if you define a simple master message containin
 	adding new types of messages any time and receivers detecting types a client may not support.
 	0 should indicate that the Message is the zero value.
 */
-package json
+package stream
 
 import (
 	"bytes"
