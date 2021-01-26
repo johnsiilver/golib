@@ -48,7 +48,6 @@ func grpcTest(concurrency, nRequests, dataSize int) *Stats {
 
 	defer func() {
 		serv.Stop()
-		log.Println("grpc stopped")
 	}()
 
 	conn, err := grpc.Dial(
