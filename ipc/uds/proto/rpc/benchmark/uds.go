@@ -70,7 +70,6 @@ func udsTest(concurrency, nRequests, dataSize int) *Stats {
 	socketAddr, serv := newUDS()
 
 	go func() {
-		log.Println("started")
 		if err := serv.Start(); err != nil {
 			log.Fatal(err)
 		}
@@ -81,7 +80,6 @@ func udsTest(concurrency, nRequests, dataSize int) *Stats {
 		if err := serv.Stop(context.Background()); err != nil {
 			panic(err)
 		}
-		log.Println("stopped")
 	}()
 
 	cred, _, err := uds.Current()

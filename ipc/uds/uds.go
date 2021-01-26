@@ -220,8 +220,6 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 		return nil, fmt.Errorf("unable to create server socket(%s): %w", socketAddr, err)
 	}
 
-	log.Printf("socket addr: %q", socketAddr)
-
 	if err := os.Chmod(socketAddr, fileMode); err != nil {
 		l.Close()
 		return nil, fmt.Errorf("unable to create server socket(%s), could not chmod the socket file: %s", socketAddr, err)
