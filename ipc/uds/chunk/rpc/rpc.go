@@ -33,7 +33,6 @@ package rpc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -45,6 +44,10 @@ import (
 
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/chunk"
+	"github.com/johnsiilver/golib/ipc/uds/chunk/rpc/payload"
+
+	"github.com/panjf2000/ants/v2"
+	"google.golang.org/protobuf/proto"
 )
 
 // Client provides an RPC client with []byte in and []byte out.
@@ -57,10 +60,11 @@ type Client struct {
 
 	id uint32 // protected with atomic
 
-	chPool *sync.Pool
+	payloadPool *sync.Pool
+	chPool      *sync.Pool
 
 	mu      sync.Mutex
-	pending map[uint32]chan payload
+	pending map[uint32]chan *payload.Payload
 }
 
 // Option is an optional argument to New.
@@ -87,15 +91,20 @@ func SharedPool(pool *sync.Pool) Option {
 func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Option) (*Client, error) {
 	rwc, err := uds.NewClient(socketAddr, uid, gid, fileModes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("client had problem opening uds socket: %w", err)
 	}
 
 	var client = &Client{
 		rwc:     rwc,
-		pending: map[uint32]chan payload{},
+		pending: map[uint32]chan *payload.Payload{},
+		payloadPool: &sync.Pool{
+			New: func() interface{} {
+				return &payload.Payload{}
+			},
+		},
 		chPool: &sync.Pool{
 			New: func() interface{} {
-				return make(chan payload, 1)
+				return make(chan *payload.Payload, 1)
 			},
 		},
 	}
@@ -126,15 +135,6 @@ func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Op
 // Close closes the underyling connection.
 func (c *Client) Close() error {
 	return c.rwc.Close()
-}
-
-type payload struct {
-	ID          uint32
-	ExpUnixNano int64
-	Method      string
-	Data        []byte
-	ErrType     int8
-	Err         string
 }
 
 // Call calls the RPC service. If Context timeout is not set, will default to 5 minutes.
@@ -170,20 +170,19 @@ func (c *Client) Call(ctx context.Context, method string, req []byte, resp *[]by
 
 	id := atomic.AddUint32(&c.id, 1)
 
-	p := payload{
-		ID:          id,
-		ExpUnixNano: d.UnixNano(),
-		Method:      method,
-		Data:        req,
-	}
+	p := c.payloadPool.Get().(*payload.Payload)
+	p.Id = id
+	p.ExpUnixNano = d.UnixNano()
+	p.Method = method
+	p.Data = req
 
-	b, err := json.Marshal(p)
+	b, err := proto.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("could not marshal the JSON payload for the request: %w", err)
 	}
-	p = payload{} // Content not needed, so lets eliminate any data we don't need around
+	c.payloadPool.Put(p)
 
-	payCh := c.chPool.Get().(chan payload)
+	payCh := c.chPool.Get().(chan *payload.Payload)
 	c.mu.Lock()
 	c.pending[id] = payCh
 	c.mu.Unlock()
@@ -203,13 +202,15 @@ func (c *Client) Call(ctx context.Context, method string, req []byte, resp *[]by
 	case <-ctx.Done():
 		return Errorf(ETDeadlineExceeded, ctx.Err().Error())
 	case p = <-payCh:
-		if p.ID == 0 {
+		if p.Id == 0 {
 			return Errorf(ETBadData, "payload sent by the server could not be unmarshalled")
 		}
 		if p.ErrType != 0 {
 			return Errorf(ErrType(p.ErrType), p.Err)
 		}
 		*resp = p.Data
+		p.Reset()
+		c.payloadPool.Put(p)
 		return nil
 	}
 }
@@ -225,13 +226,13 @@ func (c *Client) readAndRoute() {
 			return
 		}
 
-		p := payload{}
-		if err := json.Unmarshal(buff.Bytes(), &p); err != nil {
+		p := c.payloadPool.Get().(*payload.Payload)
+		if err := proto.Unmarshal(buff.Bytes(), p); err != nil {
 			log.Printf("received a set of bytes that could not be unmarshalled to a payload:\n%s", string(buff.Bytes()))
 			continue
 		}
 		c.mu.Lock()
-		ch := c.pending[p.ID]
+		ch := c.pending[p.Id]
 		c.mu.Unlock()
 		// This happends if the call has already met a deadline, so we just drop this.
 		if ch == nil {
@@ -258,28 +259,35 @@ type RequestHandler func(ctx context.Context, req []byte) (resp []byte, err erro
 
 // Server provides an json RPC server.
 type Server struct {
-	udsServ  *uds.Server
-	pool     *sync.Pool
-	maxSize  int64
-	handlers map[string]RequestHandler
-	stop     chan struct{}
-	inFlight sync.WaitGroup
+	socketAddr  string
+	uid, gid    int
+	fileMode    os.FileMode
+	udsServ     *uds.Server
+	pool        *sync.Pool
+	maxSize     int64
+	handlers    map[string]RequestHandler
+	stop        chan struct{}
+	inFlight    sync.WaitGroup
+	payloadPool *sync.Pool
 
 	started bool
 }
 
 // NewServer is the constructor for a Server. rwc must be a *uds.Client or *uds.Conn.
 func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, error) {
-	udsServ, err := uds.NewServer(socketAddr, uid, gid, fileMode)
-	if err != nil {
-		return nil, err
-	}
-
 	return &Server{
-		udsServ: udsServ,
+		socketAddr: socketAddr,
+		uid:        uid,
+		gid:        gid,
+		fileMode:   fileMode,
 		pool: &sync.Pool{
 			New: func() interface{} {
 				return &bytes.Buffer{}
+			},
+		},
+		payloadPool: &sync.Pool{
+			New: func() interface{} {
+				return &payload.Payload{}
 			},
 		},
 		stop:     make(chan struct{}),
@@ -289,6 +297,11 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 
 // Start starts the server. This will block until the server stops.
 func (s *Server) Start() error {
+	udsServ, err := uds.NewServer(s.socketAddr, s.uid, s.gid, s.fileMode)
+	if err != nil {
+		return err
+	}
+	s.udsServ = udsServ
 	s.started = true
 
 	for {
@@ -296,8 +309,11 @@ func (s *Server) Start() error {
 		case <-s.stop:
 			return s.udsServ.Close()
 		case conn := <-s.udsServ.Conn():
-			// TODO(jdoak): This is naive, needs to be in a reusable pool.
-			go s.handleRequests(conn)
+			ants.Submit(
+				func() {
+					s.handleRequests(conn)
+				},
+			)
 		}
 	}
 }
@@ -350,10 +366,12 @@ func (s *Server) handleRequests(conn *uds.Conn) {
 			}
 			return
 		}
-		// TODO(jdoak): Again, naive handling. Will need to use a pool at some point.
-		// Consider ants.
 		s.inFlight.Add(1)
-		go s.callHandler(buff, conn, chunker)
+		ants.Submit(
+			func() {
+				s.callHandler(buff, conn, chunker)
+			},
+		)
 	}
 }
 
@@ -362,16 +380,16 @@ func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.C
 	defer s.inFlight.Done()
 	defer chunker.Recycle(req)
 
-	p := payload{}
+	p := s.payloadPool.Get().(*payload.Payload)
 
-	if err := json.Unmarshal(req.Bytes(), &p); err != nil {
-		servErrorf(chunker, p.ID, ETBadData, fmt.Errorf("got payload that could not be unmarshalled: %s", string(req.Bytes())))
+	if err := proto.Unmarshal(req.Bytes(), p); err != nil {
+		servErrorf(chunker, p.Id, ETBadData, fmt.Errorf("got payload that could not be unmarshalled: %s", string(req.Bytes())))
 		return
 	}
 
 	h, ok := s.handlers[p.Method]
 	if !ok {
-		servErrorf(chunker, p.ID, ETMethodNotFound, fmt.Errorf("method(%s): not found", p.Method))
+		servErrorf(chunker, p.Id, ETMethodNotFound, fmt.Errorf("method(%s): not found", p.Method))
 		return
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, p.ExpUnixNano))
@@ -380,14 +398,16 @@ func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.C
 
 	resp, err := h(ctx, p.Data)
 	if err != nil {
-		servErrorf(chunker, p.ID, ETMethodNotFound, err)
+		servErrorf(chunker, p.Id, ETMethodNotFound, err)
 		return
 	}
 
 	p.Data = resp // Just reuse the send payload, just replace the data.
-	buff, err := json.Marshal(p)
+	buff, err := proto.Marshal(p)
+	p.Reset()
+	s.payloadPool.Put(p)
 	if err != nil {
-		servErrorf(chunker, p.ID, ETServer, fmt.Errorf("could not marshal they payload: %s", err))
+		servErrorf(chunker, p.Id, ETServer, fmt.Errorf("could not marshal they payload: %s", err))
 		return
 	}
 	if err := chunker.Write(buff); err != nil {
@@ -396,8 +416,11 @@ func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.C
 }
 
 func servErrorf(chunker *chunk.Client, id uint32, code ErrType, err error) error {
-	p := payload{ErrType: int8(code), Err: err.Error()}
-	b, _ := json.Marshal(p) // Can't error
+	p := &payload.Payload{ErrType: uint32(code), Err: err.Error()}
+	b, err := proto.Marshal(p) // Can't error
+	if err != nil {
+		panic("major bug")
+	}
 
 	return chunker.Write(b)
 }

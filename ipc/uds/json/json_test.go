@@ -23,21 +23,14 @@ func TestClient(t *testing.T) {
 		{"i am"},
 	}
 
-	socketAddr := filepath.Join(os.TempDir(), uuid.New().String(), "socket")
-	dirPath := filepath.Dir(socketAddr)
-	if err := os.MkdirAll(dirPath, 0777); err != nil {
-		panic(err)
-	}
-	defer func() {
-		os.RemoveAll(dirPath)
-	}()
+	socketAddr := filepath.Join(os.TempDir(), uuid.New().String())
 
 	cred, _, err := uds.Current()
 	if err != nil {
 		panic(err)
 	}
 
-	udsServ, err := uds.NewServer(socketAddr, cred.UID.Int(), cred.UID.Int(), 0770)
+	udsServ, err := uds.NewServer(socketAddr, cred.UID.Int(), cred.GID.Int(), 0770)
 	if err != nil {
 		panic(err)
 	}

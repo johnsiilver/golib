@@ -20,6 +20,8 @@ Unix/Linux Note:
 	filesystem. On OSX, you can receive "bind: invalid argument" when the name is too long.
 
 	On Linux there seems to be an 108 character limit for socket path names.
+	On OSX it is 104 character limit.
+
 	https://github.com/golang/go/issues/6895 .
 	I have set this as the default limit for all clients so I don't have to figure out the limit on
 	every type of system and interpret non-sensical errors.
@@ -36,10 +38,7 @@ import (
 	"os/user"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
-
-	"github.com/kylelemons/godebug/pretty"
 )
 
 // oneByte is used as the receiver for a read that will never succeed. Because the read must be at
@@ -127,9 +126,6 @@ func (c *Conn) UnixConn() *net.UnixConn {
 // Read implements io.Reader.Read(). This has an inifite read timeout. If you want to have a timeout,
 // call ReadDeadline() or ReadTimeout() before calling. You must do this for every Read() call.
 func (c *Conn) Read(b []byte) (int, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
-
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
@@ -141,9 +137,6 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 // ReadByte implements io.ByteReader.
 func (c *Conn) ReadByte() (byte, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
-
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
@@ -184,9 +177,6 @@ func (c *Conn) WriteDeadline(t time.Time) {
 // Write implements io.Writer.Write(). This has an inifite write timeout. If you want to have a timeout,
 // call WriteDeadline() or WriteTimeout() before calling. You must do this for every Write() call.
 func (c *Conn) Write(b []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
 	if c.writeOnly {
 		if isClosed(c.conn) {
 			return 0, io.EOF
@@ -215,51 +205,32 @@ type Server struct {
 // the uid and gid that file will be set to and fileMode is the file mode it will inherit. If
 // sockerAddr exists this will attempt to delete it. Suggest fileMode of 0770.
 func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, error) {
-	if len([]rune(socketAddr)) >= 108 {
-		return nil, fmt.Errorf("socketAddr(%s) path length must be 108 characters or less", socketAddr)
+	if len([]rune(socketAddr)) >= 104 {
+		return nil, fmt.Errorf("socketAddr(%s) path length must be 104 characters or less", socketAddr)
 	}
 
 	if err := os.Remove(socketAddr); err != nil {
 		if _, ok := err.(*os.PathError); !ok {
-			// if !errors.Is(err, &os.PathError{}) { // I don't know why this doesn't work.
 			return nil, fmt.Errorf("unable to create server socket(%s), could not remove old socket file: %s", socketAddr, err)
 		}
 	}
-
-	// This is sketchy, but it is how its done:
-	// https://github.com/golang/go/issues/11822
-	syscall.Umask(0770)
 
 	l, err := net.Listen("unix", socketAddr)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create server socket(%s): %w", socketAddr, err)
 	}
 
-	stat, err := os.Stat(socketAddr)
-	if err != nil {
-		panic(err)
-	}
-	log.Println(stat.Mode())
-	log.Println(pretty.Sprint(stat.Sys()))
-	log.Println(uid)
-	log.Println(gid)
+	log.Printf("socket addr: %q", socketAddr)
 
 	if err := os.Chmod(socketAddr, fileMode); err != nil {
 		l.Close()
 		return nil, fmt.Errorf("unable to create server socket(%s), could not chmod the socket file: %s", socketAddr, err)
 	}
-	stat, err = os.Stat(socketAddr)
-	if err != nil {
-		panic(err)
-	}
-	log.Println(stat.Mode())
 
-	/*
-		if err := os.Chown(socketAddr, uid, gid); err != nil {
-			l.Close()
-			return nil, fmt.Errorf("unable to create server socket(%s), could not chown the socket file: %s", socketAddr, err)
-		}
-	*/
+	if err := os.Chown(socketAddr, uid, gid); err != nil {
+		l.Close()
+		return nil, fmt.Errorf("unable to create server socket(%s), could not chown the socket file: %s", socketAddr, err)
+	}
 
 	serv := &Server{
 		l:       l.(*net.UnixListener),
@@ -324,8 +295,6 @@ type Client struct {
 	conn                        *net.UnixConn
 	readDeadline, writeDeadline time.Time
 	writeOnly                   bool
-
-	readMu, writeMu sync.Mutex
 }
 
 // NewClient creates a new UDS client to the socket at socketAddr that must have the uid and gid specified.
@@ -369,9 +338,6 @@ func (c *Client) UnixConn() *net.UnixConn {
 // differs from native behavior which times out. If you want to have read timeouts, use
 // ReadDeadline()/ReadTimeout() to change. This must be done before every Read() call.
 func (c *Client) Read(b []byte) (int, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
-
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
@@ -382,9 +348,6 @@ func (c *Client) Read(b []byte) (int, error) {
 
 // ReadByte implements io.ByteReader.
 func (c *Client) ReadByte() (byte, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
-
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
@@ -426,9 +389,6 @@ func (c *Client) WriteDeadline(t time.Time) {
 // differs from native behavior which times out. If you want to have write timeouts, use
 // WriteDeadeline()/WriteTimeout() to change. This must be done before every Write() call.
 func (c *Client) Write(b []byte) (int, error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
 	if c.writeOnly {
 		if isClosed(c.conn) {
 			return 0, io.EOF

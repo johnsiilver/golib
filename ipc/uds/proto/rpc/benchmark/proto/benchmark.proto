@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+message BenchmarkReq {
+    bytes data = 1;
+}
+
+message BenchmarkResp {
+    bytes data = 1;
+}
+
+service Benchmark {
+    rpc Benchmark(BenchmarkReq) returns (BenchmarkResp) {};
+}
