@@ -34,9 +34,9 @@ gRPC works great for IPC on UDS, at least with protos. While I love gRPC, I want
 
 So I certainly haven't benched everything. But I did bench the proto RPC, as it uses the chunking rpc package, which uses chunked streams. 
 
-I compared this to gRPC. Interestingly, they seem to have small and large requests on me, while I seem to hold the middle ground. At different points we both double the other's performance. 
+I compared this to gRPC. Interestingly, they seem to handle the smallest data requests (1.0 kB) than this package, but this seems to be do better for all others. I think think in the small data size it is because I have a lot of memory pools for reuse and slightly more overhead in my packets.
 
-At some point I will dig more into this, see if I can beat them at all of them.
+No matter what my internal settings, I would beat gRPC at 10kB and double their performance in the 102 kB size.  To get better performance in large sizes, I had to add some kernel buffer space over the defaults, which lead to close to double performance.
 
 Platform was OSX running on an 8-core Macbook Pro, Circa 2019. You can guess that your Threadripper Linux box will do much better.
 
@@ -44,24 +44,24 @@ Platform was OSX running on an 8-core Macbook Pro, Circa 2019. You can guess tha
 Test Results(uds):
 ==========================================================================
 
-[16 Users][10000 Requests][1.0 kB Bytes] - min 105.798µs/sec, max 10.012826ms/sec, avg 345.763µs/sec, rps 46036.38
+[16 Users][10000 Requests][1.0 kB Bytes] - min 66.006µs/sec, max 10.490104ms/sec, avg 360.717µs/sec, rps 44073.80
 
-[16 Users][10000 Requests][10 kB Bytes] - min 183.494µs/sec, max 7.120556ms/sec, avg 782.938µs/sec, rps 20370.44
+[16 Users][10000 Requests][10 kB Bytes] - min 316.524µs/sec, max 7.427324ms/sec, avg 695.233µs/sec, rps 22937.87
 
-[16 Users][10000 Requests][102 kB Bytes] - min 754.436µs/sec, max 13.988786ms/sec, avg 2.397784ms/sec, rps 6662.04
+[16 Users][10000 Requests][102 kB Bytes] - min 1.67625ms/sec, max 17.691309ms/sec, avg 2.593304ms/sec, rps 6159.70
 
-[16 Users][10000 Requests][1.0 MB Bytes] - min 8.938606ms/sec, max 101.601032ms/sec, avg 77.746482ms/sec, rps 205.74
+[16 Users][10000 Requests][1.0 MB Bytes] - min 9.369687ms/sec, max 57.597223ms/sec, avg 19.979866ms/sec, rps 800.25
 
 Test Results(grpc):
 ==========================================================================
 
-[16 Users][10000 Requests][1.0 kB Bytes] - min 53.877µs/sec, max 1.971816ms/sec, avg 300.443µs/sec, rps 51995.80
+[16 Users][10000 Requests][1.0 kB Bytes] - min 55.612µs/sec, max 2.611833ms/sec, avg 318.452µs/sec, rps 49159.45
 
-[16 Users][10000 Requests][10 kB Bytes] - min 95.035µs/sec, max 3.520594ms/sec, avg 898.786µs/sec, rps 17747.95
+[16 Users][10000 Requests][10 kB Bytes] - min 92.618µs/sec, max 3.379955ms/sec, avg 914.139µs/sec, rps 17444.59
 
-[16 Users][10000 Requests][102 kB Bytes] - min 2.363614ms/sec, max 8.20306ms/sec, avg 4.60433ms/sec, rps 3473.11
+[16 Users][10000 Requests][102 kB Bytes] - min 1.932897ms/sec, max 14.351104ms/sec, avg 4.529876ms/sec, rps 3530.03
 
-[16 Users][10000 Requests][1.0 MB Bytes] - min 21.394619ms/sec, max 40.292218ms/sec, avg 34.239825ms/sec, rps 467.15
+[16 Users][10000 Requests][1.0 MB Bytes] - min 15.468868ms/sec, max 39.040674ms/sec, avg 31.875585ms/sec, rps 501.78
 ```
 
 Benchmark Guide: 
