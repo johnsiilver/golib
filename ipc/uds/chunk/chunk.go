@@ -81,6 +81,16 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 			},
 		}
 	}
+
+	switch v := rwc.(type) {
+	case *uds.Conn:
+		v.UnixConn().SetReadBuffer(5 * 1024 * 1000)
+		v.UnixConn().SetWriteBuffer(5 * 1024 * 1000)
+	case *uds.Client:
+		v.UnixConn().SetReadBuffer(5 * 1024 * 1000)
+		v.UnixConn().SetWriteBuffer(5 * 1024 * 1000)
+	}
+
 	return client, nil
 }
 
@@ -114,20 +124,6 @@ func (c *Client) Read() (*bytes.Buffer, error) {
 		}
 	}
 
-	// This adjusts our read buffer up to 10MiB. We don't go above that because we 10 clients =
-	// 100 MiB.
-	if size > int64(c.biggestReadMsgSize) {
-		c.biggestReadMsgSize = int(size)
-		if c.biggestReadMsgSize < oneMiB {
-			switch v := c.rwc.(type) {
-			case *uds.Conn:
-				v.UnixConn().SetReadBuffer(10 * c.biggestReadMsgSize)
-			case *uds.Client:
-				v.UnixConn().SetReadBuffer(10 * c.biggestReadMsgSize)
-			}
-		}
-	}
-
 	buff := c.pool.Get().(*bytes.Buffer)
 	buff.Reset()
 
@@ -151,20 +147,6 @@ func (c *Client) Write(b []byte) error {
 	if c.maxSize > 0 {
 		if len(b) > int(c.maxSize) {
 			return fmt.Errorf("message exceeds max size set")
-		}
-	}
-
-	// This adjusts our read buffer up to 10MiB. We don't go above that because we 10 clients =
-	// 100 MiB.
-	if len(b) > c.biggestWriteMsgSize {
-		c.biggestWriteMsgSize = len(b)
-		if c.biggestReadMsgSize < oneMiB {
-			switch v := c.rwc.(type) {
-			case *uds.Conn:
-				v.UnixConn().SetWriteBuffer(10 * c.biggestReadMsgSize)
-			case *uds.Client:
-				v.UnixConn().SetWriteBuffer(10 * c.biggestReadMsgSize)
-			}
 		}
 	}
 
