@@ -1,13 +1,20 @@
 /*
 Package chunk provides a high level chunking client. A chunk is defined as a defined amount of data.
+A chunk client will work with *uds.Client, *uds.Conn object for chunking in clients and servers.
+
+The high level RPC clients in all packages use chunk underneath.
 
 A chunk client simply writes a variadic int to indicate the next message size to be written and then
 writes the message. On a read call it reads the int indicating the size and then reads in that
 amount of buffer.
 
+The format is:
+	[varint][data chunk]
+
 The chunk client can set a maximum message size.
 
-If a read error occurs, the chunk client will close the connection.  Read errors should never occur in UDS.
+If a read error occurs, the chunk client will close the connection.  Read errors should only happen
+if the maximum message size is exceeded or io.EOF to indicate the socket is closed.
 */
 package chunk
 
