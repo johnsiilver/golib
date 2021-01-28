@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+option go_package = "github.com/johnsiilver/golib/ipc/uds/highlevel/proto/rpc/example/proto;msg";
+
+// Request a quote from the server.
+message QuoteReq {}
+
+// Response for a quote.
+message QuoteResp {
+    // The famous quote.
+    string quote = 1;
+}

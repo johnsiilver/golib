@@ -1,5 +1,17 @@
 # UDS - Packages for using Unix Domain Sockets
 
+## Usage Note
+This package is considered beta. Until this note is removed, changes to this that cause an incompatibility will be noted with a Minor version change, not a Major version change in
+the overall repo.
+
+## TLDR
+
+- Provides convience over standard net.Listen("unix") and net.Dial("unix")
+- Provides high level packages to do streams and RPCs(protocol buffers/JSON)
+- Provides authentication on the server
+- Benchmarked against gRPC, mostly faster(except at 1kiB or lower) and WAY LESS allocations
+- Linux/OSX only
+
 ## Introduction
 Go provides unix sockets via its net.Dial() and net.Listen() calls.  But how to use these to achive IPC (interprocess communication) isn't straightforward.
 
@@ -28,40 +40,66 @@ I've used UDS to communicate to sub-processes when I want to mount and unmount "
 
 There are some other packages out there, but I haven't seen them supporting auth.
 
-gRPC works great for IPC on UDS, at least with protos. While I love gRPC, I wanted more options and I wanted authentication. 
+gRPC works great for IPC on UDS, at least with protos. While I love gRPC, I wanted more options, authentication and much lower heap allocations.
 
 ## Everyone loves some benchmarks
 
 So I certainly haven't benched everything. But I did bench the proto RPC, as it uses the chunking rpc package, which uses chunked streams. 
 
-I compared this to gRPC. Interestingly, they seem to handle the smallest data requests (1.0 kB) better than this package, but this seems to be do better for all others. I think think in the small data size it is because I have a lot of memory pools for reuse and slightly more overhead in my packets.
+I compared this to gRPC as it provides a managed RPC mechansim over unix sockets. Interestingly, gRPC seem to handle the smallest data requests (1.0 kB) better than this package, but this seems to be do better for all others. I think the small data size test is due to my use of memory pools for reuse and slightly more overhead in my packets.
 
 No matter what my internal settings, I would beat gRPC at 10kB and double their performance in the 102 kB size.  To get better performance in large sizes, I had to add some kernel buffer space over the defaults, which lead to close to double performance.
+
+But the real killer here is allocations. This decimates gRPC in heap allocation reduction. Keep this in mind for high performance applications. If you delve deep into making Go fast, everything points at one thing: keeping your allocations down. Once you leave the micro-benchmark world (like these benchmarks), your app starts crawling if the GC has to deal with lots of objects. The key to that is buffer reuse and gRPC's design for ease of use hurts that ability.
 
 Platform was OSX running on an 8-core Macbook Pro, Circa 2019. You can guess that your Threadripper Linux box will do much better.
 
 ```
 Test Results(uds):
 ==========================================================================
+[Speed]
 
-[16 Users][10000 Requests][1.0 kB Bytes] - min 66.006µs/sec, max 10.490104ms/sec, avg 360.717µs/sec, rps 44073.80
+[16 Users][10000 Requests][1.0 kB Bytes] - min 100.729µs/sec, max 10.029661ms/sec, avg 348.084µs/sec, rps 45751.37
 
-[16 Users][10000 Requests][10 kB Bytes] - min 316.524µs/sec, max 7.427324ms/sec, avg 695.233µs/sec, rps 22937.87
+[16 Users][10000 Requests][10 kB Bytes] - min 282.04µs/sec, max 8.067866ms/sec, avg 685.19µs/sec, rps 23269.75
 
-[16 Users][10000 Requests][102 kB Bytes] - min 1.67625ms/sec, max 17.691309ms/sec, avg 2.593304ms/sec, rps 6159.70
+[16 Users][10000 Requests][102 kB Bytes] - min 1.512654ms/sec, max 12.380839ms/sec, avg 2.528536ms/sec, rps 6314.61
 
-[16 Users][10000 Requests][1.0 MB Bytes] - min 9.369687ms/sec, max 57.597223ms/sec, avg 19.979866ms/sec, rps 800.25
+[16 Users][10000 Requests][1.0 MB Bytes] - min 9.33996ms/sec, max 65.578487ms/sec, avg 20.282241ms/sec, rps 788.33
+
+
+[Allocs]
+
+[10000 Requests][1.0 kB Bytes] - allocs 330,858
+
+[10000 Requests][10 kB Bytes] - allocs 354,272
+
+[10000 Requests][102 kB Bytes] - allocs 415,754
+
+[10000 Requests][1.0 MB Bytes] - allocs 523,738
 
 Test Results(grpc):
 ==========================================================================
+[Speed]
 
-[16 Users][10000 Requests][1.0 kB Bytes] - min 55.612µs/sec, max 2.611833ms/sec, avg 318.452µs/sec, rps 49159.45
+[16 Users][10000 Requests][1.0 kB Bytes] - min 59.624µs/sec, max 3.571806ms/sec, avg 305.171µs/sec, rps 51137.15
 
-[16 Users][10000 Requests][10 kB Bytes] - min 92.618µs/sec, max 3.379955ms/sec, avg 914.139µs/sec, rps 17444.59
+[16 Users][10000 Requests][10 kB Bytes] - min 93.19µs/sec, max 2.397846ms/sec, avg 875.864µs/sec, rps 18216.72
 
-[16 Users][10000 Requests][102 kB Bytes] - min 1.932897ms/sec, max 14.351104ms/sec, avg 4.529876ms/sec, rps 3530.03
+[16 Users][10000 Requests][102 kB Bytes] - min 1.221068ms/sec, max 8.495421ms/sec, avg 4.434272ms/sec, rps 3606.63
 
-[16 Users][10000 Requests][1.0 MB Bytes] - min 15.468868ms/sec, max 39.040674ms/sec, avg 31.875585ms/sec, rps 501.78
+[16 Users][10000 Requests][1.0 MB Bytes] - min 21.448849ms/sec, max 54.920306ms/sec, avg 34.307985ms/sec, rps 466.28
+
+
+[Allocs]
+
+[10000 Requests][1.0 kB Bytes] - allocs 1,505,165
+
+[10000 Requests][10 kB Bytes] - allocs 1,681,061
+
+[10000 Requests][102 kB Bytes] - allocs 1,947,529
+
+[10000 Requests][1.0 MB Bytes] - allocs 3,250,309
 ```
 
 Benchmark Guide: 
