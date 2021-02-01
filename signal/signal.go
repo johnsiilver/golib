@@ -37,7 +37,7 @@ Example using Wait() and receiving data:
 		defer ack.Ack("I'm out!") // Acknowledge receipt and return data.
 
 		// This will print "hello everyone".
-		fmt.Println(<-ack.Date().(string))
+		fmt.Println(<-ack.Data().(string))
 	}(sig)
 
 	// This will wait until ack.Ack() is called above.
@@ -49,12 +49,12 @@ Example using Wait() and receiving data:
 Example using promises for asynchronous return values:
 	sig := signal.New()
 
-	go func(sig Signaler) {
+	go func() {
 		ack := sig.Receive()
 		defer ack.Ack("done")
 
-		fmt.Println("go here")
-	}(sig)
+		fmt.Println("got here")
+	}()
 
 	p := make(chan interface{}, 1)
 	sig.Signal(nil, sigmal.Promise(p))
