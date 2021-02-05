@@ -101,6 +101,11 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 	return client, nil
 }
 
+// Close closes the underlying io.ReadWriteCloser.
+func (c *Client) Close() error {
+	return c.rwc.Close()
+}
+
 // Recycle recycles a *bytes.Buffer. This should only be done when the Buffer is no longer
 // in use (including its internal []byte slice).
 func (c *Client) Recycle(b *bytes.Buffer) {
