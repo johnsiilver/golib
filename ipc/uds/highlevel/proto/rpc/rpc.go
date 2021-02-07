@@ -74,13 +74,12 @@ should retry a request.
 package rpc
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"sync"
 
 	"github.com/johnsiilver/golib/ipc/uds"
+	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk"
 	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk/rpc"
 
 	"google.golang.org/protobuf/proto"
@@ -90,7 +89,7 @@ import (
 type Client struct {
 	rpc *rpc.Client
 
-	pool    *sync.Pool // *bytes.Buffer
+	pool    *chunk.Pool
 	maxSize int64
 }
 
@@ -107,8 +106,8 @@ func MaxSize(size int64) Option {
 
 // SharedPool allows the use of a shared pool of buffers between Client instead of a pool per client.
 // This is useful when clients are short lived and have similar message sizes. Client will panic if the
-// pool does not return a *bytes.Buffer object.
-func SharedPool(pool *sync.Pool) Option {
+// pool does not return a *[]byte object.
+func SharedPool(pool *chunk.Pool) Option {
 	return func(c *Client) {
 		c.pool = pool
 	}
@@ -121,11 +120,7 @@ func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Op
 		o(client)
 	}
 	if client.pool == nil {
-		client.pool = &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		}
+		client.pool = chunk.NewPool(10)
 	}
 
 	cc, err := rpc.New(socketAddr, uid, gid, fileModes, rpc.MaxSize(client.maxSize), rpc.SharedPool(client.pool))
@@ -154,30 +149,43 @@ func (c *Client) Call(ctx context.Context, method string, req, resp proto.Messag
 		return fmt.Errorf("must pass non-nil resp arg")
 	}
 
-	data, err := proto.Marshal(req)
+	data, err := c.marshalProto(req)
 	if err != nil {
 		return err
 	}
+	defer c.pool.Put(data)
 
 	if c.maxSize > 0 {
-		if len(data) > int(c.maxSize) {
+		if len(*data) > int(c.maxSize) {
 			return fmt.Errorf("data has a size greater than your max size limit")
 		}
 	}
 
-	buff := c.pool.Get().(*bytes.Buffer)
-	buff.Reset()
+	buff := c.pool.Get()
 	defer c.pool.Put(buff)
 
-	respBytes := buff.Bytes()
-	if err := c.rpc.Call(ctx, method, data, &respBytes); err != nil {
+	if err := c.rpc.Call(ctx, method, *data, buff); err != nil {
 		return err
 	}
 
-	if err := proto.Unmarshal(respBytes, resp); err != nil {
-		return rpc.Errorf(rpc.ETBadData, "could not unmarshal into response(%T):\n%s", resp, string(respBytes))
+	if err := proto.Unmarshal(*buff, resp); err != nil {
+		return rpc.Errorf(rpc.ETBadData, "could not unmarshal into response(%T):\n%s", resp, string(*buff))
 	}
 	return nil
+}
+
+var marshalOpts = proto.MarshalOptions{}
+
+func (c *Client) marshalProto(m proto.Message) (*[]byte, error) {
+	buff := c.pool.Get()
+
+	b, err := marshalOpts.MarshalAppend(*buff, m)
+	if err != nil {
+		return nil, err
+	}
+
+	*buff = b
+	return buff, nil
 }
 
 // CredFromCtx will extract the Cred from the Context object.

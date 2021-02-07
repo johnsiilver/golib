@@ -19,7 +19,6 @@ if the maximum message size is exceeded or io.EOF to indicate the socket is clos
 package chunk
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -30,10 +29,61 @@ import (
 
 var ordering = binary.LittleEndian
 
+type writer struct {
+	buff *[]byte
+}
+
+func (w writer) Write(b []byte) (int, error) {
+	*w.buff = append(*w.buff, b...)
+	return len(b), nil
+}
+
+// Pool is a memory pool for buffers.
+type Pool struct {
+	ch   chan *[]byte
+	pool *sync.Pool
+}
+
+// NewPool is the constructor for Pool. cap is capacity of an internal free list
+// before using a sync.Pool.
+func NewPool(cap int) *Pool {
+	var ch chan *[]byte
+	if cap > 0 {
+		ch = make(chan *[]byte, cap)
+	}
+	p := &Pool{ch: ch}
+	p.pool = &sync.Pool{New: p.alloc}
+	return p
+}
+
+func (p *Pool) alloc() interface{} {
+	return &[]byte{}
+}
+
+// Get gets some buffer out of the pool.
+func (p *Pool) Get() *[]byte {
+	select {
+	case b := <-p.ch:
+		return b
+	default:
+	}
+	return p.pool.Get().(*[]byte)
+}
+
+// Put puts buffer back into the pool.
+func (p *Pool) Put(b *[]byte) {
+	*b = (*b)[:0]
+	select {
+	case p.ch <- b:
+		return
+	default:
+	}
+}
+
 // Client provides a wrapper around an *uds.Client or *uds.Server that can send data chunks.
 type Client struct {
 	rwc  io.ReadWriteCloser
-	pool *sync.Pool
+	pool *Pool
 
 	writeVarInt []byte
 	readVarInt  []byte
@@ -58,8 +108,8 @@ func MaxSize(size int64) Option {
 
 // SharedPool allows the use of a shared pool of buffers between Client instead of a pool per client.
 // This is useful when clients are short lived and have similar message sizes. Client will panic if the
-// pool does not return a *bytes.Buffer object.
-func SharedPool(pool *sync.Pool) Option {
+// pool does not return a *[]byte object.
+func SharedPool(pool *Pool) Option {
 	return func(c *Client) {
 		c.pool = pool
 	}
@@ -82,11 +132,7 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 		o(client)
 	}
 	if client.pool == nil {
-		client.pool = &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		}
+		client.pool = NewPool(10)
 	}
 
 	switch v := rwc.(type) {
@@ -106,10 +152,9 @@ func (c *Client) Close() error {
 	return c.rwc.Close()
 }
 
-// Recycle recycles a *bytes.Buffer. This should only be done when the Buffer is no longer
-// in use (including its internal []byte slice).
-func (c *Client) Recycle(b *bytes.Buffer) {
-	b.Reset()
+// Recycle recycles a *[]byte. This should only be done when the Buffer is no longer used.
+func (c *Client) Recycle(b *[]byte) {
+	*b = (*b)[:0]
 	c.pool.Put(b)
 }
 
@@ -119,7 +164,7 @@ const (
 )
 
 // Read reads the next message from the socket.
-func (c *Client) Read() (*bytes.Buffer, error) {
+func (c *Client) Read() (*[]byte, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
@@ -136,15 +181,15 @@ func (c *Client) Read() (*bytes.Buffer, error) {
 		}
 	}
 
-	buff := c.pool.Get().(*bytes.Buffer)
-	buff.Reset()
+	b := c.pool.Get()
+	w := writer{b}
 
-	_, err = io.CopyN(buff, c.rwc, size)
+	i, err := io.CopyN(w, c.rwc, size)
 	if err != nil {
 		return nil, fmt.Errorf("could not read full chunk: %s", err)
 	}
-
-	return buff, nil
+	*b = (*b)[:i]
+	return b, nil
 }
 
 // Write writes b as a chunk into the socket.

@@ -8,11 +8,8 @@ This is for decoding a single proto message type.
 package proto
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk"
@@ -24,7 +21,7 @@ import (
 type Client struct {
 	rwc     io.ReadWriteCloser
 	chunker *chunk.Client
-	pool    *sync.Pool
+	pool    *chunk.Pool
 
 	maxSize int64
 }
@@ -42,8 +39,8 @@ func MaxSize(size int64) Option {
 
 // SharedPool allows the use of a shared pool of buffers between Client instead of a pool per client.
 // This is useful when clients are short lived and have similar message sizes. Client will panic if the
-// pool does not return a *bytes.Buffer object.
-func SharedPool(pool *sync.Pool) Option {
+// pool does not return a *[]byte object.
+func SharedPool(pool *chunk.Pool) Option {
 	return func(c *Client) {
 		c.pool = pool
 	}
@@ -63,11 +60,7 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 		o(client)
 	}
 	if client.pool == nil {
-		client.pool = &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		}
+		client.pool = chunk.NewPool(10)
 	}
 
 	chunker, err := chunk.New(rwc, chunk.SharedPool(client.pool), chunk.MaxSize(client.maxSize))
@@ -88,16 +81,30 @@ func (c *Client) Read(m proto.Message) error {
 	}
 
 	defer c.chunker.Recycle(buff)
-	return proto.Unmarshal(buff.Bytes(), m)
+	return proto.Unmarshal(*buff, m)
 }
 
 // Write writes m as a binary proto message into the socket.
 func (c *Client) Write(m proto.Message) error {
-	proto.Marshal(m)
-	b, err := json.Marshal(m)
+	b, err := c.marshalProto(m)
 	if err != nil {
 		return err
 	}
+	defer c.pool.Put(b)
 
-	return c.chunker.Write(b)
+	return c.chunker.Write(*b)
+}
+
+var marshalOpts = proto.MarshalOptions{}
+
+func (c *Client) marshalProto(m proto.Message) (*[]byte, error) {
+	buff := c.pool.Get()
+
+	b, err := marshalOpts.MarshalAppend(*buff, m)
+	if err != nil {
+		return nil, err
+	}
+
+	*buff = b
+	return buff, nil
 }

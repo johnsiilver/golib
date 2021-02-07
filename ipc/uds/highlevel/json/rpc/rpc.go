@@ -102,15 +102,14 @@ should retry a request.
 package rpc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
-	"sync"
 
 	"github.com/johnsiilver/golib/ipc/uds"
+	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk"
 	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk/rpc"
 )
 
@@ -118,7 +117,7 @@ import (
 type Client struct {
 	chunkRPC *rpc.Client
 
-	pool    *sync.Pool // *bytes.Buffer
+	pool    *chunk.Pool // *[]byte
 	maxSize int64
 }
 
@@ -135,8 +134,8 @@ func MaxSize(size int64) Option {
 
 // SharedPool allows the use of a shared pool of buffers between Client instead of a pool per client.
 // This is useful when clients are short lived and have similar message sizes. Client will panic if the
-// pool does not return a *bytes.Buffer object.
-func SharedPool(pool *sync.Pool) Option {
+// pool does not return a *[]byte object.
+func SharedPool(pool *chunk.Pool) Option {
 	return func(c *Client) {
 		c.pool = pool
 	}
@@ -149,11 +148,7 @@ func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Op
 		o(client)
 	}
 	if client.pool == nil {
-		client.pool = &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		}
+		client.pool = chunk.NewPool(10)
 	}
 
 	cc, err := rpc.New(socketAddr, uid, gid, fileModes, rpc.MaxSize(client.maxSize), rpc.SharedPool(client.pool))
@@ -196,17 +191,15 @@ func (c *Client) Call(ctx context.Context, method string, req, resp interface{})
 		}
 	}
 
-	buff := c.pool.Get().(*bytes.Buffer)
-	buff.Reset()
+	buff := c.pool.Get()
 	defer c.pool.Put(buff)
 
-	respBytes := buff.Bytes()
-	if err := c.chunkRPC.Call(ctx, method, data, &respBytes); err != nil {
+	if err := c.chunkRPC.Call(ctx, method, data, buff); err != nil {
 		return err
 	}
 
-	if err := json.Unmarshal(respBytes, resp); err != nil {
-		return rpc.Errorf(rpc.ETBadData, "could not unmarshal into response(%T):\n%s", resp, string(respBytes))
+	if err := json.Unmarshal(*buff, resp); err != nil {
+		return rpc.Errorf(rpc.ETBadData, "could not unmarshal into response(%T):\n%s", resp, string(*buff))
 	}
 	return nil
 }

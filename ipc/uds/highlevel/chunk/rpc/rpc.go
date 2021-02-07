@@ -31,7 +31,6 @@ a request.
 package rpc
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -60,7 +59,7 @@ func payloadReset(p *payload.Payload) {
 type Client struct {
 	rwc     io.ReadWriteCloser
 	chunker *chunk.Client
-	pool    *sync.Pool // *bytes.Buffer
+	pool    *chunk.Pool
 
 	maxSize int64
 
@@ -86,8 +85,8 @@ func MaxSize(size int64) Option {
 
 // SharedPool allows the use of a shared pool of buffers between Client instead of a pool per client.
 // This is useful when clients are short lived and have similar message sizes. Client will panic if the
-// pool does not return a *bytes.Buffer object.
-func SharedPool(pool *sync.Pool) Option {
+// pool does not return a *[]byte object.
+func SharedPool(pool *chunk.Pool) Option {
 	return func(c *Client) {
 		c.pool = pool
 	}
@@ -120,11 +119,7 @@ func New(socketAddr string, uid, gid int, fileModes []os.FileMode, options ...Op
 	}
 
 	if client.pool == nil {
-		client.pool = &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		}
+		client.pool = chunk.NewPool(10)
 	}
 
 	chunker, err := chunk.New(rwc, chunk.SharedPool(client.pool), chunk.MaxSize(client.maxSize))
@@ -182,7 +177,8 @@ func (c *Client) Call(ctx context.Context, method string, req []byte, resp *[]by
 	p.Method = method
 	p.Data = req
 
-	b, err := proto.Marshal(p)
+	b, err := c.marshalProto(p)
+	defer c.pool.Put(b)
 	if err != nil {
 		return fmt.Errorf("could not marshal the JSON payload for the request: %w", err)
 	}
@@ -193,7 +189,7 @@ func (c *Client) Call(ctx context.Context, method string, req []byte, resp *[]by
 	c.pending[id] = payCh
 	c.mu.Unlock()
 
-	if err := c.chunker.Write(b); err != nil {
+	if err := c.chunker.Write(*b); err != nil {
 		c.rwc.Close()
 		return fmt.Errorf("chunk could not be written: %s", err)
 	}
@@ -233,10 +229,12 @@ func (c *Client) readAndRoute() {
 		}
 
 		p := c.payloadPool.Get().(*payload.Payload)
-		if err := proto.Unmarshal(buff.Bytes(), p); err != nil {
-			log.Printf("received a set of bytes that could not be unmarshalled to a payload:\n%s", string(buff.Bytes()))
+		if err := proto.Unmarshal(*buff, p); err != nil {
+			log.Printf("received a set of bytes that could not be unmarshalled to a payload:\n%s", string(*buff))
 			continue
 		}
+		c.chunker.Recycle(buff)
+
 		c.mu.Lock()
 		ch := c.pending[p.Id]
 		c.mu.Unlock()
@@ -246,6 +244,20 @@ func (c *Client) readAndRoute() {
 		}
 		ch <- p
 	}
+}
+
+var marshalOpts = proto.MarshalOptions{}
+
+func (c *Client) marshalProto(m proto.Message) (*[]byte, error) {
+	buff := c.pool.Get()
+
+	b, err := marshalOpts.MarshalAppend(*buff, m)
+	if err != nil {
+		return nil, err
+	}
+
+	*buff = b
+	return buff, nil
 }
 
 type credKeyType string
@@ -269,7 +281,7 @@ type Server struct {
 	uid, gid    int
 	fileMode    os.FileMode
 	udsServ     *uds.Server
-	pool        *sync.Pool // *bytes.Buffer
+	pool        *chunk.Pool
 	payloadPool *sync.Pool // *pb.Payload
 	maxSize     int64
 	handlers    map[string]RequestHandler
@@ -286,11 +298,7 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 		uid:        uid,
 		gid:        gid,
 		fileMode:   fileMode,
-		pool: &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		},
+		pool:       chunk.NewPool(10),
 		payloadPool: &sync.Pool{
 			New: func() interface{} {
 				return &payload.Payload{}
@@ -382,14 +390,14 @@ func (s *Server) handleRequests(conn *uds.Conn) {
 }
 
 // callHandler unloads our frame (payload type), looks up the method to call,
-func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.Client) {
+func (s *Server) callHandler(req *[]byte, conn *uds.Conn, chunker *chunk.Client) {
 	defer s.inFlight.Done()
 	defer chunker.Recycle(req)
 
 	p := s.payloadPool.Get().(*payload.Payload)
 
-	if err := proto.Unmarshal(req.Bytes(), p); err != nil {
-		servErrorf(chunker, p.Id, ETBadData, fmt.Errorf("got payload that could not be unmarshalled: %s", string(req.Bytes())))
+	if err := proto.Unmarshal(*req, p); err != nil {
+		servErrorf(chunker, p.Id, ETBadData, fmt.Errorf("got payload that could not be unmarshalled: %s", string(*req)))
 		return
 	}
 
@@ -409,16 +417,30 @@ func (s *Server) callHandler(req *bytes.Buffer, conn *uds.Conn, chunker *chunk.C
 	}
 
 	p.Data = resp // Just reuse the send payload, just replace the data.
-	buff, err := proto.Marshal(p)
+	buff, err := s.marshalProto(p)
 	p.Reset()
 	s.payloadPool.Put(p)
 	if err != nil {
 		servErrorf(chunker, p.Id, ETServer, fmt.Errorf("could not marshal they payload: %s", err))
 		return
 	}
-	if err := chunker.Write(buff); err != nil {
+	defer s.pool.Put(buff)
+
+	if err := chunker.Write(*buff); err != nil {
 		return
 	}
+}
+
+func (s *Server) marshalProto(m proto.Message) (*[]byte, error) {
+	buff := s.pool.Get()
+
+	b, err := marshalOpts.MarshalAppend(*buff, m)
+	if err != nil {
+		return nil, err
+	}
+
+	*buff = b
+	return buff, nil
 }
 
 func servErrorf(chunker *chunk.Client, id uint32, code ErrType, err error) error {

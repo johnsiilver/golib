@@ -21,11 +21,9 @@ This handles streams beautifully if you define a simple master message containin
 package stream
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"sync"
 
 	"github.com/johnsiilver/golib/ipc/uds"
 	"github.com/johnsiilver/golib/ipc/uds/highlevel/chunk"
@@ -35,7 +33,7 @@ import (
 type Client struct {
 	rwc     io.ReadWriteCloser
 	chunker *chunk.Client
-	pool    *sync.Pool
+	pool    *chunk.Pool
 
 	maxSize int64
 }
@@ -53,8 +51,8 @@ func MaxSize(size int64) Option {
 
 // SharedPool allows the use of a shared pool of buffers between Client instead of a pool per client.
 // This is useful when clients are short lived and have similar message sizes. Client will panic if the
-// pool does not return a *bytes.Buffer object.
-func SharedPool(pool *sync.Pool) Option {
+// pool does not return a *[]byte object.
+func SharedPool(pool *chunk.Pool) Option {
 	return func(c *Client) {
 		c.pool = pool
 	}
@@ -74,11 +72,7 @@ func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
 		o(client)
 	}
 	if client.pool == nil {
-		client.pool = &sync.Pool{
-			New: func() interface{} {
-				return &bytes.Buffer{}
-			},
-		}
+		client.pool = chunk.NewPool(10)
 	}
 
 	chunker, err := chunk.New(rwc, chunk.SharedPool(client.pool), chunk.MaxSize(client.maxSize))
@@ -99,7 +93,7 @@ func (c *Client) Read(v interface{}) error {
 	}
 
 	defer c.chunker.Recycle(buff)
-	return json.Unmarshal(buff.Bytes(), v)
+	return json.Unmarshal(*buff, v)
 }
 
 // Write writes v as a JSON value into the socket.

@@ -253,9 +253,3 @@ func (c *callPool) caller() {
 		c.records.put(call())
 	}
 }
-
-/*
-func grpcTest() {
-
-}
-*/

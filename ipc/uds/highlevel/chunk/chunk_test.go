@@ -72,7 +72,7 @@ func TestClient(t *testing.T) {
 				}
 				panic(err)
 			}
-			serverGot = append(serverGot, buff.Bytes())
+			serverGot = append(serverGot, *buff)
 		}
 	}()
 	// Client writes.
@@ -98,7 +98,7 @@ func TestClient(t *testing.T) {
 				}
 				panic(err)
 			}
-			clientGot = append(clientGot, buff.Bytes())
+			clientGot = append(clientGot, *buff)
 		}
 	}()
 
