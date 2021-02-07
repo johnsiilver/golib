@@ -77,6 +77,7 @@ func (p *Pool) Put(b *[]byte) {
 	case p.ch <- b:
 		return
 	default:
+		p.pool.Put(b)
 	}
 }
 

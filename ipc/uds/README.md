@@ -59,24 +59,24 @@ Test Results(uds):
 ==========================================================================
 [Speed]
 
-[16 Users][10000 Requests][1.0 kB Bytes] - min 60.703µs/sec, max 7.5236ms/sec, avg 436.837µs/sec, rps 36397.31
+[16 Users][10000 Requests][1.0 kB Bytes] - min 81.012µs/sec, max 6.104835ms/sec, avg 421.681µs/sec, rps 37753.70
 
-[16 Users][10000 Requests][10 kB Bytes] - min 169.353µs/sec, max 8.076229ms/sec, avg 592.908µs/sec, rps 26852.12
+[16 Users][10000 Requests][10 kB Bytes] - min 114.08µs/sec, max 7.556417ms/sec, avg 604.738µs/sec, rps 26320.57
 
-[16 Users][10000 Requests][102 kB Bytes] - min 730.112µs/sec, max 12.171057ms/sec, avg 1.174129ms/sec, rps 13593.72
+[16 Users][10000 Requests][102 kB Bytes] - min 715.613µs/sec, max 12.25426ms/sec, avg 1.159332ms/sec, rps 13767.39
 
-[16 Users][10000 Requests][1.0 MB Bytes] - min 7.520263ms/sec, max 68.375883ms/sec, avg 14.412446ms/sec, rps 1108.94
+[16 Users][10000 Requests][1.0 MB Bytes] - min 7.495129ms/sec, max 81.682792ms/sec, avg 14.405727ms/sec, rps 1109.90
 
 
 [Allocs]
 
-[10000 Requests][1.0 kB Bytes] - allocs 270,355
+[10000 Requests][1.0 kB Bytes] - allocs 270,350
 
 [10000 Requests][10 kB Bytes] - allocs 270,580
 
-[10000 Requests][102 kB Bytes] - allocs 272,140
+[10000 Requests][102 kB Bytes] - allocs 272,132
 
-[10000 Requests][1.0 MB Bytes] - allocs 279,231
+[10000 Requests][1.0 MB Bytes] - allocs 279,161
 
 Test Results(grpc):
 ==========================================================================
