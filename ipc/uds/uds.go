@@ -39,6 +39,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/panjf2000/ants"
 )
 
 // oneByte is used as the receiver for a read that will never succeed. Because the read must be at
@@ -104,7 +106,37 @@ type Conn struct {
 	writeDeadline time.Time
 	writeOnly     bool
 
+	// closed reports if the server had Close() called.
+	closed chan struct{}
+	once   sync.Once // guards done
+	// done indicates close was called on the Conn.
+	done chan struct{}
+
 	readMu, writeMu sync.Mutex
+}
+
+func newConn(conn *net.UnixConn, cred Cred, closed chan struct{}) *Conn {
+	c := &Conn{
+		Cred:   cred,
+		conn:   conn,
+		closed: closed,
+		done:   make(chan struct{}),
+	}
+	ants.Submit(
+		func() {
+			c.closeWatch()
+		},
+	)
+	return c
+}
+
+// closeWatch watches for signal from the server or that this Conn has closed.
+func (c *Conn) closeWatch() {
+	select {
+	case <-c.closed:
+		c.conn.Close()
+	case <-c.done:
+	}
 }
 
 // WriteOnly let's the Conn know that this Conn will only be used for writing. This will cause a
@@ -129,6 +161,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
+
 	c.conn.SetReadDeadline(c.readDeadline)
 	c.readDeadline = time.Time{}
 
@@ -190,6 +223,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 
 // Close implements io.Closer.Close().
 func (c *Conn) Close() error {
+	c.once.Do(func() { close(c.done) })
 	return c.conn.Close()
 }
 
@@ -199,6 +233,7 @@ type Server struct {
 	oneByte []byte
 	errCh   chan error
 	connCh  chan *Conn
+	closed  chan struct{}
 }
 
 // NewServer creates a new UDS server that creates and listens to the file at socketPath. uid and gid are
@@ -235,6 +270,7 @@ func NewServer(socketAddr string, uid, gid int, fileMode os.FileMode) (*Server, 
 		oneByte: make([]byte, 1),
 		errCh:   make(chan error, 1),
 		connCh:  make(chan *Conn, 1),
+		closed:  make(chan struct{}),
 	}
 	go serv.accept()
 	return serv, nil
@@ -283,7 +319,7 @@ func (c *Server) accept() {
 				conn.Close()
 				continue
 			}
-			c.connCh <- &Conn{conn: uc, Cred: cred}
+			c.connCh <- newConn(uc, cred, c.closed)
 		}
 	}()
 }
