@@ -40,7 +40,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/panjf2000/ants"
+	"github.com/panjf2000/ants/v2"
 )
 
 // oneByte is used as the receiver for a read that will never succeed. Because the read must be at
