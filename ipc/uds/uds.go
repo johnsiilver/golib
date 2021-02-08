@@ -130,6 +130,15 @@ func newConn(conn *net.UnixConn, cred Cred, closed chan struct{}) *Conn {
 	return c
 }
 
+func (c *Conn) connClosed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+	}
+	return false
+}
+
 // closeWatch watches for signal from the server or that this Conn has closed.
 func (c *Conn) closeWatch() {
 	select {
@@ -161,6 +170,9 @@ func (c *Conn) Read(b []byte) (int, error) {
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
+	if c.connClosed() {
+		return 0, io.EOF
+	}
 
 	c.conn.SetReadDeadline(c.readDeadline)
 	c.readDeadline = time.Time{}
@@ -173,6 +185,10 @@ func (c *Conn) ReadByte() (byte, error) {
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
+	if c.connClosed() {
+		return 0, io.EOF
+	}
+
 	c.conn.SetReadDeadline(c.readDeadline)
 	c.readDeadline = time.Time{}
 	b := make([]byte, 1)
@@ -215,6 +231,10 @@ func (c *Conn) Write(b []byte) (int, error) {
 			return 0, io.EOF
 		}
 	}
+
+	if c.connClosed() {
+		return 0, io.EOF
+	}
 	c.conn.SetWriteDeadline(c.writeDeadline)
 	c.writeDeadline = time.Time{}
 
@@ -223,6 +243,7 @@ func (c *Conn) Write(b []byte) (int, error) {
 
 // Close implements io.Closer.Close().
 func (c *Conn) Close() error {
+	defer log.Println("conn closed")
 	c.once.Do(func() { close(c.done) })
 	return c.conn.Close()
 }
