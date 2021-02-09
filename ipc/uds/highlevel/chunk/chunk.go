@@ -1,6 +1,7 @@
 /*
 Package chunk provides a high level chunking client. A chunk is defined as a defined amount of data.
 A chunk client will work with *uds.Client, *uds.Conn object for chunking in clients and servers.
+It will work with other io.ReadWriteCloser, but we make not guarantees with those.
 
 The high level RPC clients in all packages use chunk underneath.
 
@@ -119,17 +120,10 @@ func SharedPool(pool *Pool) Option {
 
 // New is the constructor for Client. rwc must be a *uds.Client or *uds.Conn.
 func New(rwc io.ReadWriteCloser, options ...Option) (*Client, error) {
-	var client *Client
-
-	switch rwc.(type) {
-	case *uds.Client, *uds.Conn:
-		client = &Client{
-			rwc:         rwc,
-			writeVarInt: make([]byte, 8),
-			closed:      make(chan struct{}),
-		}
-	default:
-		return nil, fmt.Errorf("rwc was not a *uds.Client or *uds.Server, was %T", rwc)
+	client := &Client{
+		rwc:         rwc,
+		writeVarInt: make([]byte, 8),
+		closed:      make(chan struct{}),
 	}
 
 	for _, o := range options {
