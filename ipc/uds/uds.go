@@ -29,6 +29,7 @@ Unix/Linux Note:
 package uds
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -102,6 +103,7 @@ type Cred struct {
 type Conn struct {
 	Cred          Cred
 	conn          *net.UnixConn
+	buffer        *bufio.Reader
 	readDeadline  time.Time
 	writeDeadline time.Time
 	writeOnly     bool
@@ -119,6 +121,7 @@ func newConn(conn *net.UnixConn, cred Cred, closed chan struct{}) *Conn {
 	c := &Conn{
 		Cred:   cred,
 		conn:   conn,
+		buffer: bufio.NewReaderSize(conn, 1024),
 		closed: closed,
 		done:   make(chan struct{}),
 	}
@@ -139,11 +142,18 @@ func (c *Conn) connClosed() bool {
 	return false
 }
 
+// Close implements io.Closer.Close().
+func (c *Conn) Close() error {
+	defer log.Println("conn closed")
+	c.once.Do(func() { close(c.done) })
+	return c.conn.Close()
+}
+
 // closeWatch watches for signal from the server or that this Conn has closed.
 func (c *Conn) closeWatch() {
 	select {
 	case <-c.closed:
-		c.conn.Close()
+		c.Close()
 	case <-c.done:
 	}
 }
@@ -171,13 +181,14 @@ func (c *Conn) Read(b []byte) (int, error) {
 		panic("called Read() when Client.WriteOnly() set")
 	}
 	if c.connClosed() {
+		log.Println("read called on closed conn")
 		return 0, io.EOF
 	}
 
 	c.conn.SetReadDeadline(c.readDeadline)
 	c.readDeadline = time.Time{}
 
-	return c.conn.Read(b)
+	return c.buffer.Read(b)
 }
 
 // ReadByte implements io.ByteReader.
@@ -186,13 +197,14 @@ func (c *Conn) ReadByte() (byte, error) {
 		panic("called Read() when Client.WriteOnly() set")
 	}
 	if c.connClosed() {
+		log.Println("ReadByte called on closed conn")
 		return 0, io.EOF
 	}
 
 	c.conn.SetReadDeadline(c.readDeadline)
 	c.readDeadline = time.Time{}
 	b := make([]byte, 1)
-	_, err := c.conn.Read(b)
+	_, err := c.buffer.Read(b)
 	if err != nil {
 		return 0, err
 	}
@@ -239,13 +251,6 @@ func (c *Conn) Write(b []byte) (int, error) {
 	c.writeDeadline = time.Time{}
 
 	return c.conn.Write(b)
-}
-
-// Close implements io.Closer.Close().
-func (c *Conn) Close() error {
-	defer log.Println("conn closed")
-	c.once.Do(func() { close(c.done) })
-	return c.conn.Close()
 }
 
 // Server provides a Unix Domain Socket server that clients can connect on.
