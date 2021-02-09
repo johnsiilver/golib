@@ -40,8 +40,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/panjf2000/ants/v2"
 )
 
 // oneByte is used as the receiver for a read that will never succeed. Because the read must be at
@@ -108,54 +106,22 @@ type Conn struct {
 	writeDeadline time.Time
 	writeOnly     bool
 
-	// closed reports if the server had Close() called.
-	closed chan struct{}
-	once   sync.Once // guards done
-	// done indicates close was called on the Conn.
-	done chan struct{}
-
 	readMu, writeMu sync.Mutex
 }
 
-func newConn(conn *net.UnixConn, cred Cred, closed chan struct{}) *Conn {
+func newConn(conn *net.UnixConn, cred Cred) *Conn {
 	c := &Conn{
 		Cred:   cred,
 		conn:   conn,
 		buffer: bufio.NewReaderSize(conn, 1024),
-		closed: closed,
-		done:   make(chan struct{}),
 	}
-	ants.Submit(
-		func() {
-			c.closeWatch()
-		},
-	)
-	return c
-}
 
-func (c *Conn) connClosed() bool {
-	select {
-	case <-c.done:
-		return true
-	default:
-	}
-	return false
+	return c
 }
 
 // Close implements io.Closer.Close().
 func (c *Conn) Close() error {
-	defer log.Println("conn closed")
-	c.once.Do(func() { close(c.done) })
 	return c.conn.Close()
-}
-
-// closeWatch watches for signal from the server or that this Conn has closed.
-func (c *Conn) closeWatch() {
-	select {
-	case <-c.closed:
-		c.Close()
-	case <-c.done:
-	}
 }
 
 // WriteOnly let's the Conn know that this Conn will only be used for writing. This will cause a
@@ -180,10 +146,6 @@ func (c *Conn) Read(b []byte) (int, error) {
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
 	}
-	if c.connClosed() {
-		log.Println("read called on closed conn")
-		return 0, io.EOF
-	}
 
 	c.conn.SetReadDeadline(c.readDeadline)
 	c.readDeadline = time.Time{}
@@ -195,10 +157,6 @@ func (c *Conn) Read(b []byte) (int, error) {
 func (c *Conn) ReadByte() (byte, error) {
 	if c.writeOnly {
 		panic("called Read() when Client.WriteOnly() set")
-	}
-	if c.connClosed() {
-		log.Println("ReadByte called on closed conn")
-		return 0, io.EOF
 	}
 
 	c.conn.SetReadDeadline(c.readDeadline)
@@ -244,9 +202,6 @@ func (c *Conn) Write(b []byte) (int, error) {
 		}
 	}
 
-	if c.connClosed() {
-		return 0, io.EOF
-	}
 	c.conn.SetWriteDeadline(c.writeDeadline)
 	c.writeDeadline = time.Time{}
 
@@ -345,7 +300,7 @@ func (c *Server) accept() {
 				conn.Close()
 				continue
 			}
-			c.connCh <- newConn(uc, cred, c.closed)
+			c.connCh <- newConn(uc, cred)
 		}
 	}()
 }
