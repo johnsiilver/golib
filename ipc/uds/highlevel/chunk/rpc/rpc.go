@@ -376,6 +376,13 @@ func (s *Server) handleRequests(conn *uds.Conn) {
 		buff, err := chunker.Read()
 		if err != nil {
 			if err != io.EOF {
+				// If the server has been closed, then this will be a *net.Op error.
+				// We shouldn't error if the server was stopped.
+				select {
+				case <-s.stop:
+					return
+				default:
+				}
 				log.Println(err)
 			}
 			return
