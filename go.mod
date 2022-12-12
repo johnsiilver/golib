@@ -5,6 +5,7 @@ go 1.15
 require (
 	github.com/StackExchange/wmi v0.0.0-20190523213315-cbe66965904d // indirect
 	github.com/beeker1121/goque v2.1.0+incompatible
+	github.com/brk0v/directio v0.0.0-20190225130936-69406e757cf7
 	github.com/dustin/go-humanize v1.0.0
 	github.com/frankban/quicktest v1.11.3 // indirect
 	github.com/fsnotify/fsnotify v1.4.9

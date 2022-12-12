@@ -5,19 +5,21 @@ that can be managed, moved and trivially read. More complex use cases require mo
 involving multiple files, lock files, etc.... This makes no attempt to provide that.
 
 Read call without a cached index consist of:
-	* A single seek to an index entry
-	* Two 8 byte reads for data offset and len
-	* A seek to the data
-	* A single read of the value
+  - A single seek to an index entry
+  - Two 8 byte reads for data offset and len
+  - A seek to the data
+  - A single read of the value
+
 Total: 2 seeks and 3 reads
 
 Read call with cached index consits of:
-	* A single read to the data
+  - A single read to the data
 
 If doing a range over a large file or lots of range calls, it is optimal to have the Reader cache
 the index.  Every 131,072 entries consumes 1 MiB of cached memory.
 
 File format is as follows:
+
 	<file>
 	<reserve header space>
 		[index offset]
@@ -38,6 +40,7 @@ File format is as follows:
 package diskslice
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -45,6 +48,8 @@ import (
 	"io"
 	"os"
 	"sync"
+
+	"github.com/brk0v/directio"
 )
 
 // reservedHeader is the size, in bytes, of the reserved header portion of the file.
@@ -77,7 +82,10 @@ type value struct {
 // Writer provides methods for writing an array of values to disk that can be read without
 // reading the file back into memory.
 type Writer struct {
+	name   string
 	file   *os.File
+	dio    *directio.DirectIO
+	buf    *bufio.Writer
 	index  index
 	offset int64
 	num    int64
@@ -97,33 +105,6 @@ func WriteIntercept(interceptor func(dst io.Writer) io.WriteCloser) WriteOption 
 	}
 }
 
-// New is the constructor for Writer.
-func New(fpath string, options ...WriteOption) (*Writer, error) {
-	f, err := os.Create(fpath)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := f.Chmod(0600); err != nil {
-		return nil, err
-	}
-
-	if _, err = f.Seek(reservedHeader, 0); err != nil {
-		return nil, fmt.Errorf("was unable to seek %d bytes into the file: %q", reservedHeader, err)
-	}
-
-	w := &Writer{
-		file:   f,
-		offset: reservedHeader,
-		index:  make(index, 0, 1000),
-		mu:     sync.Mutex{},
-	}
-	for _, option := range options {
-		option(w)
-	}
-	return w, nil
-}
-
 // Write writes a byte slice to the diskslice.
 func (w *Writer) Write(b []byte) error {
 	if w.interceptor != nil {
@@ -141,7 +122,11 @@ func (w *Writer) Write(b []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if _, err := w.file.Write(b); err != nil {
+	var writer io.Writer = w.file
+	if w.buf != nil {
+		writer = w.buf
+	}
+	if _, err := writer.Write(b); err != nil {
 		return fmt.Errorf("problem writing value to disk: %q", err)
 	}
 
@@ -161,15 +146,32 @@ func (w *Writer) Write(b []byte) error {
 
 // Close closes the file for writing and writes our index to the file.
 func (w *Writer) Close() error {
+	var writer io.Writer = w.file
+	if w.buf != nil {
+		writer = w.buf
+	}
+
 	// Write each data offset, then the length of the key, then finally the key to disk (our index) for each entry.
 	for _, entry := range w.index {
-		if err := binary.Write(w.file, endian, entry.offset); err != nil {
+		if err := binary.Write(writer, endian, entry.offset); err != nil {
 			return fmt.Errorf("could not write offset value %d: %q", entry.offset, err)
 		}
 
-		if err := binary.Write(w.file, endian, entry.length); err != nil {
+		if err := binary.Write(writer, endian, entry.length); err != nil {
 			return fmt.Errorf("could not write data length: %q", err)
 		}
+	}
+
+	if w.buf != nil {
+		w.buf.Flush()
+		w.dio.Flush()
+
+		w.file.Close()
+		f, err := os.OpenFile(w.name, os.O_RDWR, 0666)
+		if err != nil {
+			return err
+		}
+		w.file = f
 	}
 
 	// Now that we've written all our data to the end of the file, we can go back to our reserved header

@@ -65,6 +65,31 @@ func TestDiskMap(t *testing.T) {
 	}
 }
 
+func BenchmarkDiskMap(b *testing.B) {
+	b.ReportAllocs()
+
+	p := path.Join(os.TempDir(), nextSuffix())
+	w, err := New(p)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(p)
+
+	b.ResetTimer()
+	for i := 0; i < 10000; i++ {
+		k := []byte(nextSuffix())
+		v := randStringBytes()
+
+		if err := w.Write(k, v); err != nil {
+			b.Fatalf("error writing:\nkey:%q\nvalue:%q\n", k, v)
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		b.Fatalf("error closing the Writer: %q", err)
+	}
+}
+
 func nextSuffix() string {
 	r := uint32(time.Now().UnixNano() + int64(os.Getpid()))
 

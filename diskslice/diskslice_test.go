@@ -106,6 +106,31 @@ func SubDiskList(t *testing.T, readOptions []ReadOption, writeOptions []WriteOpt
 	}
 }
 
+func BenchmarkDisksliceWrite(b *testing.B) {
+	b.ReportAllocs()
+
+	p := path.Join(os.TempDir(), nextSuffix())
+
+	w, err := New(p)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(p)
+
+	b.ResetTimer()
+	for i := 0; i < 100000; i++ {
+		v := randStringBytes()
+
+		if err := w.Write(v); err != nil {
+			b.Fatalf("error writing:\nkey:%q\nvalue:%q\n", i, v)
+		}
+	}
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+	b.StopTimer()
+}
+
 func nextSuffix() string {
 	r := uint32(time.Now().UnixNano() + int64(os.Getpid()))
 

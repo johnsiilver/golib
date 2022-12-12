@@ -20,7 +20,7 @@ func Example() {
   fmt.Println(string(content))
 
   // This fetches the content at each change.
-  for b := range <-ch {
+  for b := range ch {
       fmt.Println("New content of the file:")
       fmt.Println(string(b))
   }

@@ -1,6 +1,7 @@
 /*
 Package diskmap provides disk storage of key/value pairs.  The data is immutable once written.
 In addition the diskmap utilizes mmap on reads to make the random access faster.
+On Linux, diskmap uses directio to speed up writes.
 
 Usage is simplistic:
 
@@ -81,14 +82,17 @@ Reading the file is simply:
 package diskmap
 
 import (
+	"bufio"
+	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"sync"
 	"unsafe"
 
-	"golang.org/x/net/context"
+	"github.com/brk0v/directio"
 )
 
 // reservedHeader is the size, in bytes, of the reserved header portion of the file.
@@ -157,34 +161,14 @@ type value struct {
 
 // writer implements Writer.
 type writer struct {
+	name   string
 	file   *os.File
+	dio    *directio.DirectIO
+	buf    *bufio.Writer
 	index  index
 	offset int64
 	num    int64
 	sync.Mutex
-}
-
-// New returns a new Writer that writes to file "p".
-func New(p string) (Writer, error) {
-	f, err := os.Create(p)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := f.Chmod(0600); err != nil {
-		return nil, err
-	}
-
-	if _, err = f.Seek(reservedHeader, 0); err != nil {
-		return nil, fmt.Errorf("was unable to seek %d bytes into the file: %q", reservedHeader, err)
-	}
-
-	return &writer{
-		file:   f,
-		offset: reservedHeader,
-		index:  make(index, 0, 1000),
-		Mutex:  sync.Mutex{},
-	}, nil
 }
 
 // Write implements Writer.Write().
@@ -192,7 +176,14 @@ func (w *writer) Write(k, v []byte) error {
 	w.Lock()
 	defer w.Unlock()
 
-	if _, err := w.file.Write(v); err != nil {
+	var writer io.Writer
+	if w.buf != nil {
+		writer = w.buf
+	} else {
+		writer = w.file
+	}
+
+	if _, err := writer.Write(v); err != nil {
 		return fmt.Errorf("problem writing key/value to disk: %q", err)
 	}
 
@@ -213,23 +204,41 @@ func (w *writer) Write(k, v []byte) error {
 
 // Close implements Writer.Close().
 func (w *writer) Close() error {
+	var writer io.Writer
+	if w.buf != nil {
+		writer = w.buf
+	} else {
+		writer = w.file
+	}
+
 	// Write each data offset, then the length of the key, then finally the key to disk (our index) for each entry.
 	for _, entry := range w.index {
-		if err := binary.Write(w.file, endian, entry.offset); err != nil {
+		if err := binary.Write(writer, endian, entry.offset); err != nil {
 			return fmt.Errorf("could not write offset value %d: %q", entry.offset, err)
 		}
 
-		if err := binary.Write(w.file, endian, entry.length); err != nil {
+		if err := binary.Write(writer, endian, entry.length); err != nil {
 			return fmt.Errorf("could not write data length: %q", err)
 		}
 
-		if err := binary.Write(w.file, endian, int64(len(entry.key))); err != nil {
+		if err := binary.Write(writer, endian, int64(len(entry.key))); err != nil {
 			return fmt.Errorf("could not write key length: %q", err)
 		}
 
-		if _, err := w.file.Write(entry.key); err != nil {
+		if _, err := writer.Write(entry.key); err != nil {
 			return fmt.Errorf("could not write key to disk: %q", err)
 		}
+	}
+	if w.buf != nil {
+		w.buf.Flush()
+		w.dio.Flush()
+
+		w.file.Close()
+		f, err := os.OpenFile(w.name, os.O_RDWR, 0666)
+		if err != nil {
+			return err
+		}
+		w.file = f
 	}
 
 	// Now that we've written all our data to the end of the file, we can go back to our reserved header
