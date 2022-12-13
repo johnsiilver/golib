@@ -55,7 +55,7 @@ func TestDiskMap(t *testing.T) {
 			continue
 		}
 
-		if bytes.Compare(val, v) != 0 {
+		if !bytes.Equal(val, v) {
 			t.Errorf("a value was not correctly stored")
 		}
 	}
@@ -65,7 +65,64 @@ func TestDiskMap(t *testing.T) {
 	}
 }
 
-func BenchmarkDiskMap(b *testing.B) {
+func TestDiskMapDuplicateKeys(t *testing.T) {
+	p := path.Join(os.TempDir(), nextSuffix())
+	w, err := New(p)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(p)
+
+	_1stKey := []byte(nextSuffix())
+	_1stData := randStringBytes()
+	dupKey := []byte(nextSuffix())
+	dupData0 := randStringBytes()
+	dupData1 := randStringBytes()
+	_2ndKey := []byte(nextSuffix())
+	_2ndData := randStringBytes()
+
+	for _, kv := range []KeyValue{
+		{Key: _1stKey, Value: _1stData},
+		{Key: dupKey, Value: dupData0},
+		{Key: _2ndKey, Value: _2ndData},
+		{Key: dupKey, Value: dupData1},
+	} {
+		if err := w.Write(kv.Key, kv.Value); err != nil {
+			t.Fatalf("error writing:\nkey:%q\nvalue:%q\n", kv.Key, kv.Value)
+		}
+	}
+
+	w.Close()
+
+	r, err := Open(p)
+	if err != nil {
+		t.Fatalf("error opening diskmap %q", err)
+	}
+
+	got, err := r.Read(dupKey)
+	if err != nil {
+		t.Fatalf("TestDiskMapDuplicateKeys(r.Read()): got err == %s, want err == nil", err)
+	}
+	if !bytes.Equal(got, dupData1) {
+		t.Fatalf("TestDiskMapDuplicateKeys(r.Read()): got incorrect data")
+	}
+
+	gotBatch, err := r.ReadAll(dupKey)
+	if err != nil {
+		t.Fatalf("TestDiskMapDuplicateKeys(r.ReadAll()): got err == %s, want err == nil", err)
+	}
+	if len(gotBatch) != 2 {
+		t.Fatalf("TestDiskMapDuplicateKeys(r.ReadAll()): got %d return values, want %d", len(gotBatch), 2)
+	}
+	want := [][]byte{dupData0, dupData1}
+	for i := 0; i < len(gotBatch); i++ {
+		if !bytes.Equal(gotBatch[i], want[i]) {
+			t.Fatalf("TestDiskMapDuplicateKeys(r.ReadAll()): returned value %d was incorrect", i)
+		}
+	}
+}
+
+func BenchmarkDiskMapWriter(b *testing.B) {
 	b.ReportAllocs()
 
 	p := path.Join(os.TempDir(), nextSuffix())
