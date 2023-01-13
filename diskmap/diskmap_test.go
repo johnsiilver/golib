@@ -2,6 +2,7 @@ package diskmap
 
 import (
 	"bytes"
+	"context"
 	"math/rand"
 	"os"
 	"path"
@@ -62,6 +63,45 @@ func TestDiskMap(t *testing.T) {
 
 	if _, err := r.Read([]byte("helloworld")); err == nil {
 		t.Errorf("a non-existant key passed to Read() did not return an error")
+	}
+}
+
+func TestRange(t *testing.T) {
+	p := path.Join(os.TempDir(), nextSuffix())
+	w, err := New(p)
+	if err != nil {
+		panic(err)
+	}
+	defer os.Remove(p)
+
+	for i := byte(0); i < 200; i++ {
+		b := []byte{i}
+		if err := w.Write(b, b); err != nil {
+			t.Fatalf("error writing:\nkey:%v\nvalue:%v\n", b, b)
+		}
+	}
+	w.Close()
+
+	r, err := Open(p)
+	if err != nil {
+		panic(err)
+	}
+	defer r.Close()
+
+	lookingFor := make([]bool, 200)
+
+	i := byte(0)
+	for kv := range r.Range(context.Background()) {
+		lookingFor[int(kv.Key[0])] = true
+		i++
+	}
+	if i != 200 {
+		t.Fatalf("TestRange: expected %d keys, found %d", 200, i)
+	}
+	for x, found := range lookingFor {
+		if !found {
+			t.Errorf("TestRange: key(%d) was not found", x)
+		}
 	}
 }
 
