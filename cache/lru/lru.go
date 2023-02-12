@@ -1,7 +1,7 @@
 /*
 Package lru implements a Least Recently Used cache.
 
-This implmenetation lets you set the limitations of the cache size based upon a number of entries.
+This implementation lets you set the limitations of the cache size based upon a number of entries.
 
 The package also includes a utility called "tailor" for tailoring the cache to a specific key/value type
 instead of interface{}, allowing you to remove the overhead of runtime type inference.
