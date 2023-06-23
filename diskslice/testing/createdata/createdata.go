@@ -6,18 +6,18 @@ import (
 	"os"
 	"path"
 
-	"github.com/johnsiilver/golib/diskslice/diskslice2"
+	"github.com/johnsiilver/golib/diskslice"
 )
 
 func main() {
 	p0 := path.Join(os.TempDir(), "disksliceV0.slice")
 	p1 := path.Join(os.TempDir(), "disksliceV1.slice")
 
-	w0, err := diskslice2.New(p0, diskslice2.WriteV0())
+	w0, err := diskslice.New(p0, diskslice.WriteV0())
 	if err != nil {
 		panic(err)
 	}
-	w1, err := diskslice2.New(p1)
+	w1, err := diskslice.New(p1)
 	if err != nil {
 		panic(err)
 	}
