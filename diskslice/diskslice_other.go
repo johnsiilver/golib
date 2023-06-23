@@ -3,13 +3,32 @@
 package diskslice
 
 import (
-	"fmt"
+	"bufio"
 	"os"
 	"sync"
+
+	"github.com/johnsiilver/golib/diskslice/file_v0"
 )
 
 // New is the constructor for Writer.
 func New(fpath string, options ...WriteOption) (*Writer, error) {
+	wr := &Writer{}
+	for _, option := range options {
+		option(wr)
+	}
+	if wr.useV0 {
+		v0Options := make([]v0.WriteOption, 0, len(options))
+		if wr.interceptor != nil {
+			v0Options = append(v0Options, v0.WriteIntercept(wr.interceptor))
+		}
+		var err error
+		wr.v0, err = v0.New(fpath, v0Options...)
+		if err != nil {
+			return nil, err
+		}
+		return wr, nil
+	}
+
 	f, err := os.Create(fpath)
 	if err != nil {
 		return nil, err
@@ -19,18 +38,24 @@ func New(fpath string, options ...WriteOption) (*Writer, error) {
 		return nil, err
 	}
 
-	if _, err = f.Seek(reservedHeader, 0); err != nil {
-		return nil, fmt.Errorf("was unable to seek %d bytes into the file: %q", reservedHeader, err)
+	header := [reservedHeader]byte{}
+	_, err = f.Write(header[:])
+	if err != nil {
+		return nil, err
 	}
 
-	w := &Writer{
+	buf := bufio.NewWriterSize(f, 67108864)
+
+	wr = &Writer{
 		file:   f,
-		offset: reservedHeader,
+		buf:    buf,
+		name:   fpath,
 		index:  make(index, 0, 1000),
+		offset: reservedHeader,
 		mu:     sync.Mutex{},
 	}
 	for _, option := range options {
-		option(w)
+		option(wr)
 	}
-	return w, nil
+	return wr, nil
 }

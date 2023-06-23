@@ -1,4 +1,4 @@
-package diskslice
+package v0
 
 import (
 	"bytes"
@@ -90,16 +90,17 @@ func SubDiskList(t *testing.T, readOptions []ReadOption, writeOptions []WriteOpt
 			t.Fatalf("an index(%d)/value pair was lost: %q", i, err)
 		}
 
-		if !bytes.Equal(val, v) {
+		if bytes.Compare(val, v) != 0 {
 			t.Fatalf("a value(@%d) was not correctly stored, got %s, want %s", i, string(val), string(v))
 		}
 	}
 
-	for value := range r.Range(context.Background(), 0, -1, 67108864) {
+	for value := range r.Range(context.Background(), 0, -1) {
 		if value.Err != nil {
 			t.Fatalf("got unexpected error in Range(): %s", value.Err)
 		}
-		if !bytes.Equal(value.Value, data[value.Index]) {
+
+		if bytes.Compare(value.Value, data[value.Index]) != 0 {
 			t.Fatalf("during Range(): a value(@%d) was not correctly stored, got %s, want %s", value.Index, string(value.Value), string(data[value.Index]))
 		}
 	}
@@ -128,24 +129,6 @@ func BenchmarkDisksliceWrite(b *testing.B) {
 		panic(err)
 	}
 	b.StopTimer()
-}
-
-func BenchmarkDisksliceRead(b *testing.B) {
-	b.ReportAllocs()
-
-	p := `/var/folders/rd/hbhb8s197633_f8ncy6fmpqr0000gn/T/disksliceV1.slice`
-
-	r, err := Open(p)
-	if err != nil {
-		panic(err)
-	}
-
-	b.ResetTimer()
-	for v := range r.Range(context.Background(), 0, -1, 67108864) {
-		if v.Err != nil {
-			panic(v.Err)
-		}
-	}
 }
 
 func nextSuffix() string {
