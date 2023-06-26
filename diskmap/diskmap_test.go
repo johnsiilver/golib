@@ -187,6 +187,29 @@ func BenchmarkDiskMapWriter(b *testing.B) {
 	}
 }
 
+func BenchmarkDiskMapRead(b *testing.B) {
+	b.ReportAllocs()
+
+	p := `/var/folders/rd/hbhb8s197633_f8ncy6fmpqr0000gn/T/diskmapV0.map`
+
+	r, err := Open(p)
+	if err != nil {
+		panic(err)
+	}
+
+	b.ResetTimer()
+	count := 0
+	for v := range r.Range(context.Background()) {
+		if v.Err != nil {
+			panic(v.Err)
+		}
+		count++
+	}
+	if count != 1000000 {
+		panic("wrong count")
+	}
+}
+
 func nextSuffix() string {
 	r := uint32(time.Now().UnixNano() + int64(os.Getpid()))
 

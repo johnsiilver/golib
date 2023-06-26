@@ -98,8 +98,10 @@ import (
 	"github.com/brk0v/directio"
 )
 
-// reservedHeader is the size, in bytes, of the reserved header portion of the file.
+// reservedHeader is the size, IN BYTES, of the reserved header portion of the file.
 const reservedHeader = 64
+
+const version float32 = 0.0
 
 // endian is the endianess of all our binary encodings.
 var endian = binary.LittleEndian
@@ -110,6 +112,13 @@ var ErrKeyNotFound = fmt.Errorf("key was not found")
 // Reader provides read access to the the diskmap file. If you fake this, you need
 // to embed it in your fake.
 type Reader interface {
+	// Exists returns true if the key exists in the diskmap. Thread-safe.
+	Exists(key []byte) bool
+
+	// Keys returns all the keys in the diskmap. This reads only from memory
+	// and does not access disk. Thread-safe.
+	Keys(ctx context.Context) chan []byte
+
 	// Read fetches key "k" and returns the value. If there are multi-key matches,
 	// it returns the last key added. Errors when key not found. Thread-safe.
 	Read(k []byte) ([]byte, error)
@@ -171,8 +180,50 @@ type value struct {
 	length int64
 }
 
+type header struct {
+	// indexOffset is the offset from the start of the file to the start of the index.
+	indexOffset int64
+	// num is the number of entries in the diskslice.
+	num int64
+	// version is the version of the diskslice data format.
+	version float32 // only set when reading, not used in writing
+}
+
+func (h *header) read(f io.Reader) error {
+	if err := binary.Read(f, endian, &h.indexOffset); err != nil {
+		return fmt.Errorf("cannot read index offset: %q", err)
+	}
+
+	if err := binary.Read(f, endian, &h.num); err != nil {
+		return fmt.Errorf("cannot read number of entries from reserved header: %q", err)
+	}
+
+	if err := binary.Read(f, endian, &h.version); err != nil {
+		return fmt.Errorf("cannot read version from reserved header: %q", err)
+	}
+	return nil
+}
+
+func (h *header) write(f io.Writer) error {
+	// Write the offset to the index to our reserved header.
+	if err := binary.Write(f, endian, h.indexOffset); err != nil {
+		return fmt.Errorf("could not write the index offset to the reserved header: %q", err)
+	}
+
+	// Write the number of values.
+	if err := binary.Write(f, endian, h.num); err != nil {
+		return fmt.Errorf("could not write the number of values to the reserved header: %q", err)
+	}
+
+	if err := binary.Write(f, endian, version); err != nil {
+		return fmt.Errorf("could not write the version to the reserved header: %q", err)
+	}
+	return nil
+}
+
 // writer implements Writer.
 type writer struct {
+	header header
 	name   string
 	file   *os.File
 	dio    *directio.DirectIO
@@ -259,14 +310,12 @@ func (w *writer) Close() error {
 		return fmt.Errorf("could not seek to beginning of the file: %q", err)
 	}
 
-	// Write the offset to the index to our reserved header.
-	if err := binary.Write(w.file, endian, w.offset); err != nil {
-		return fmt.Errorf("could not write the index offset to the reserved header: %q", err)
-	}
+	w.header.indexOffset = w.offset
+	w.header.num = w.num
+	w.header.version = version
 
-	// Write the number of key/value pairs.
-	if err := binary.Write(w.file, endian, w.num); err != nil {
-		return fmt.Errorf("could not write the number of key/value pairs to the reserved header: %q", err)
+	if err := w.header.write(w.file); err != nil {
+		return fmt.Errorf("could not write reserved header: %q", err)
 	}
 
 	if err := w.file.Sync(); err != nil {
@@ -278,6 +327,8 @@ func (w *writer) Close() error {
 
 // reader implements Reader.
 type reader struct {
+	header header
+
 	// index is the key to offset data mapping.
 	index map[string][]value
 
@@ -296,46 +347,50 @@ func Open(p string) (Reader, error) {
 		return nil, err
 	}
 
-	var (
-		offset int64
-		num    int64
-	)
-
-	// Read our reserved header.
-	if err := binary.Read(f, endian, &offset); err != nil {
-		return nil, fmt.Errorf("cannot read index offset: %q", err)
+	h := header{}
+	if err := h.read(f); err != nil {
+		return nil, err
 	}
 
-	if err := binary.Read(f, endian, &num); err != nil {
-		return nil, fmt.Errorf("cannot read number of entries from reserved header: %q", err)
-	}
-
-	if _, err := f.Seek(offset, 0); err != nil {
+	if _, err := f.Seek(h.indexOffset, 0); err != nil {
 		return nil, fmt.Errorf("cannot seek to index offset: %q", err)
 	}
 
-	kv := make(map[string][]value, num)
+	kv := make(map[string][]value, h.num)
+
+	r := &reader{index: kv, file: f, header: h}
+	if err := r.doCache(); err != nil {
+		return nil, err
+	}
+
+	return r, nil
+}
+
+func (r *reader) doCache() error {
+	kv := make(map[string][]value, r.header.num)
 
 	var dOff, dLen, kLen int64
 
+	read := bufio.NewReaderSize(r.file, 64*1024*1024)
+
 	// Read the index data into a map.
-	for i := int64(0); i < num; i++ {
-		if err := binary.Read(f, endian, &dOff); err != nil {
-			return nil, fmt.Errorf("cannot read a data offset in index: %q", err)
+	for i := int64(0); i < r.header.num; i++ {
+		if err := binary.Read(read, endian, &dOff); err != nil {
+			return fmt.Errorf("cannot read a data offset in index: %q", err)
 		}
 
-		if err := binary.Read(f, endian, &dLen); err != nil {
-			return nil, fmt.Errorf("cannot read a key offset in index: %q", err)
+		if err := binary.Read(read, endian, &dLen); err != nil {
+			return fmt.Errorf("cannot read a key offset in index: %q", err)
 		}
 
-		if err := binary.Read(f, endian, &kLen); err != nil {
-			return nil, fmt.Errorf("cannot read a key offset in index: %q", err)
+		if err := binary.Read(read, endian, &kLen); err != nil {
+			return fmt.Errorf("cannot read a key offset in index: %q", err)
 		}
 
 		key := make([]byte, kLen)
-
-		if _, err := f.Read(key); err != nil {
-			return nil, fmt.Errorf("error reading in a key from the index: %q", err)
+		_, err := io.ReadFull(read, key)
+		if err != nil {
+			return fmt.Errorf("error reading in a key from the index: %q", err)
 		}
 
 		strKey := byteSlice2String(key)
@@ -347,8 +402,38 @@ func Open(p string) (Reader, error) {
 
 		kv[string(key)] = []value{{offset: dOff, length: dLen}}
 	}
+	r.index = kv
+	return nil
+}
 
-	return &reader{index: kv, file: f}, nil
+// Exists returns true if the key exists in the index. There may be multiple entries.
+// This prevents a disk read for key lookups vs using a Read() and checking for ErrKeyNotFound.
+func (r *reader) Exists(key []byte) bool {
+	r.Lock()
+	defer r.Unlock()
+
+	k := byteSlice2String(key)
+	_, ok := r.index[k]
+	return ok
+}
+
+// Keys returns all the keys in the map. There are no disk reads for this operation.
+// Changing the returned []byte will change the underlying data, don't do it.
+func (r *reader) Keys(ctx context.Context) chan []byte {
+	ch := make(chan []byte, 1)
+	go func() {
+		defer close(ch)
+		for k := range r.index {
+			kk := UnsafeGetBytes(k)
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- kk:
+
+			}
+		}
+	}()
+	return ch
 }
 
 // Read implements Reader.Read().
@@ -356,6 +441,10 @@ func (r *reader) Read(k []byte) ([]byte, error) {
 	r.Lock()
 	defer r.Unlock()
 
+	return r.read(k)
+}
+
+func (r *reader) read(k []byte) ([]byte, error) {
 	vals, ok := r.index[byteSlice2String(k)]
 	if !ok {
 		return nil, ErrKeyNotFound
@@ -363,13 +452,21 @@ func (r *reader) Read(k []byte) ([]byte, error) {
 	// If there are multiple values with the same key, only return the last one.
 	v := vals[len(vals)-1]
 
-	if _, err := r.file.Seek(v.offset, 0); err != nil {
-		return nil, fmt.Errorf("cannot reach offset for key supplied by the index: %q", err)
-	}
 	b := make([]byte, v.length)
-	if _, err := r.file.Read(b); err != nil {
+
+	/*
+		_, err := r.mmap.ReadAt(b, v.offset)
+		if err != nil {
+			return nil, fmt.Errorf("error reading value from file: %q", err)
+		}
+	*/
+
+	r.file.Seek(v.offset, 0)
+	_, err := r.file.Read(b)
+	if err != nil {
 		return nil, fmt.Errorf("error reading value from file: %q", err)
 	}
+
 	return b, nil
 }
 
@@ -385,11 +482,10 @@ func (r *reader) ReadAll(k []byte) ([][]byte, error) {
 
 	sl := make([][]byte, 0, len(vals))
 	for _, v := range vals {
-		if _, err := r.file.Seek(v.offset, 0); err != nil {
-			return nil, fmt.Errorf("cannot reach offset for key supplied by the index: %q", err)
-		}
 		b := make([]byte, v.length)
-		if _, err := r.file.Read(b); err != nil {
+		r.file.Seek(v.offset, 0)
+		_, err := r.file.Read(b)
+		if err != nil {
 			return nil, fmt.Errorf("error reading value from file: %q", err)
 		}
 		sl = append(sl, b)
@@ -399,13 +495,16 @@ func (r *reader) ReadAll(k []byte) ([][]byte, error) {
 
 // Range implements Reader.Range().
 func (r *reader) Range(ctx context.Context) chan KeyValue {
+	r.Lock()
+	defer r.Unlock()
+
 	ch := make(chan KeyValue, 10)
 
 	go func() {
 		defer close(ch)
 
 		for k := range r.index {
-			v, err := r.Read(UnsafeGetBytes(k))
+			v, err := r.read(UnsafeGetBytes(k))
 			if err != nil {
 				ch <- KeyValue{Err: fmt.Errorf("key %q had no data associated with it (this is bad!): %q", k, err)}
 				return
