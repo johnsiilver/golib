@@ -95,7 +95,7 @@ func SubDiskList(t *testing.T, readOptions []ReadOption, writeOptions []WriteOpt
 		}
 	}
 
-	for value := range r.Range(context.Background(), 0, -1, 67108864) {
+	for value := range r.Range(context.Background(), 0, -1) {
 		if value.Err != nil {
 			t.Fatalf("got unexpected error in Range(): %s", value.Err)
 		}
@@ -141,7 +141,7 @@ func BenchmarkDisksliceRead(b *testing.B) {
 	}
 
 	b.ResetTimer()
-	for v := range r.Range(context.Background(), 0, -1, 67108864) {
+	for v := range r.Range(context.Background(), 0, -1) {
 		if v.Err != nil {
 			panic(v.Err)
 		}

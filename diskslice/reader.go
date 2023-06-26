@@ -207,14 +207,36 @@ func (r *Reader) findOffset(i int) (dataOffset int64, err error) {
 // Value is a value returned by Range.
 type Value = v0.Value
 
-// Range ranges over the disklist starting at start (inclusive) and ending before end (excluded).
+type rangeOptions struct {
+	buffSize int
+}
+
+func (o *rangeOptions) defaults() {
+	o.buffSize = 64 * 1024 * 1024
+}
+
+type RangeOption func(o rangeOptions) rangeOptions
+
+// WithReadBuffer sets the buffer size for the Range() channel. The default is 64 MiB.
+func WithReadBuffer(buffSize int) RangeOption {
+	return func(o rangeOptions) rangeOptions {
+		o.buffSize = buffSize
+		return o
+	}
+}
+
+// Range ranges over the diskslice starting at start (inclusive) and ending before end (excluded).
 // To range over all entries, Range(0, -1). The returned channel must be read until the channel is empty
 // or a goroutine leak will ensue. If you need to cancel the Range(), cancel the context. You must
 // check the context for an error if a deadline set or cancel is used on a Context in order to know
 // if you received all values.
-func (r *Reader) Range(ctx context.Context, start, end int, buffSize int) chan Value {
+func (r *Reader) Range(ctx context.Context, start, end int, options ...RangeOption) chan Value {
 	if r.v0 != nil {
 		return r.v0.Range(ctx, start, end)
+	}
+	opts := rangeOptions{}
+	for _, o := range options {
+		opts = o(opts)
 	}
 
 	ch := make(chan Value, 1)
@@ -251,12 +273,7 @@ func (r *Reader) Range(ctx context.Context, start, end int, buffSize int) chan V
 		return ch
 	}
 
-	var buff io.Reader
-	if buffSize > 0 {
-		buff = bufio.NewReaderSize(r.file, buffSize)
-	} else {
-		buff = bufio.NewReader(r.file)
-	}
+	var buff = bufio.NewReaderSize(r.file, opts.buffSize)
 
 	go func() {
 		defer close(ch)
