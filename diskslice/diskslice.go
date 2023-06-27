@@ -122,14 +122,15 @@ func (h *header) write(f io.Writer) error {
 // Writer provides methods for writing an array of values to disk that can be read without
 // reading the file back into memory.
 type Writer struct {
-	name   string
-	file   *os.File
-	dio    *directio.DirectIO
-	buf    *bufio.Writer
-	index  index
-	header header
-	offset int64
-	mu     sync.Mutex
+	name     string
+	file     *os.File
+	dio      *directio.DirectIO
+	buffSize int
+	buf      *bufio.Writer
+	index    index
+	header   header
+	offset   int64
+	mu       sync.Mutex
 
 	useV0       bool
 	v0          *v0.Writer
@@ -151,6 +152,13 @@ func WriteIntercept(interceptor func(dst io.Writer) io.WriteCloser) WriteOption 
 func WriteV0() WriteOption {
 	return func(w *Writer) {
 		w.useV0 = true
+	}
+}
+
+// WriteBuffer sets the size of the buffer used for writing to disk.
+func WriteBuffer(sizeBytes int) WriteOption {
+	return func(w *Writer) {
+		w.buffSize = sizeBytes
 	}
 }
 

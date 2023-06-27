@@ -44,18 +44,18 @@ func New(fpath string, options ...WriteOption) (*Writer, error) {
 		return nil, err
 	}
 
-	buf := bufio.NewWriterSize(f, 67108864)
-
 	wr = &Writer{
-		file:   f,
-		buf:    buf,
-		name:   fpath,
-		index:  make(index, 0, 1000),
-		offset: reservedHeader,
-		mu:     sync.Mutex{},
+		file:     f,
+		buffSize: 64 * 1024 * 1024,
+		name:     fpath,
+		index:    make(index, 0, 1000),
+		offset:   reservedHeader,
+		mu:       sync.Mutex{},
 	}
 	for _, option := range options {
 		option(wr)
 	}
+	wr.buf = bufio.NewWriterSize(f, wr.buffSize)
+
 	return wr, nil
 }

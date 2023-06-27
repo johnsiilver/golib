@@ -37,31 +37,33 @@ func New(fpath string, options ...WriteOption) (*Writer, error) {
 		return nil, err
 	}
 
+	// Yeah, I know we are recreating wr and doing the options things again,
+	// but this is cheap and easy.
+	wr = &Writer{
+		name:     fpath,
+		file:     f,
+		buffSize: 64 * 1024 * 1024,
+		index:    make(index, 0, 1000),
+		offset:   reservedHeader,
+		mu:       sync.Mutex{},
+	}
+	for _, option := range options {
+		option(wr)
+	}
+
 	dio, err := directio.New(f)
 	if err != nil {
 		return nil, err
 	}
 
-	w := bufio.NewWriterSize(dio, 67108864)
+	w := bufio.NewWriterSize(dio, wr.buffSize)
 	header := [reservedHeader]byte{}
 	_, err = w.Write(header[:])
 	if err != nil {
 		return nil, err
 	}
+	wr.buf = w
+	wr.dio = dio
 
-	// Yeah, I know we are recreating wr and doing the options things again,
-	// but this is cheap and easy.
-	wr = &Writer{
-		name:   fpath,
-		file:   f,
-		buf:    w,
-		dio:    dio,
-		index:  make(index, 0, 1000),
-		offset: reservedHeader,
-		mu:     sync.Mutex{},
-	}
-	for _, option := range options {
-		option(wr)
-	}
 	return wr, nil
 }
