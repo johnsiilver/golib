@@ -3,6 +3,7 @@ package diskmap
 import (
 	"bytes"
 	"context"
+	"log"
 	"math/rand"
 	"os"
 	"path"
@@ -86,7 +87,11 @@ func TestRange(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	defer r.Close()
+	defer func() {
+		log.Println("before r.Close()")
+		r.Close()
+		log.Println("got past r.Close()")
+	}()
 
 	lookingFor := make([]bool, 200)
 
@@ -95,6 +100,7 @@ func TestRange(t *testing.T) {
 		lookingFor[int(kv.Key[0])] = true
 		i++
 	}
+	log.Println("here?")
 	if i != 200 {
 		t.Fatalf("TestRange: expected %d keys, found %d", 200, i)
 	}
@@ -192,7 +198,7 @@ func BenchmarkDiskMapRead(b *testing.B) {
 
 	p := `/var/folders/rd/hbhb8s197633_f8ncy6fmpqr0000gn/T/diskmapV0.map`
 
-	r, err := Open(p)
+	r, err := Open(p, WithNumReaders(10))
 	if err != nil {
 		panic(err)
 	}

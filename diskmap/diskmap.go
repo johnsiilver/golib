@@ -332,16 +332,26 @@ type reader struct {
 	// index is the key to offset data mapping.
 	index map[string][]value
 
-	// file holds the mapping file in mmap.
-	file *os.File
+	numReaders int
+	readers    chan *os.File
+}
 
-	// The mutex is protecting the *os.File. Otherwise
-	// we can have the file pointer moving while doing a read operation.
-	sync.Mutex
+type OpenOption func(r *reader) error
+
+// WithNumReaders sets the number of readers to use when reading from the file.
+// By default, 10 readers are used. Range() concurrently uses all available readers.
+func WithNumReaders(n int) OpenOption {
+	return func(r *reader) error {
+		if n <= 0 {
+			return fmt.Errorf("number of readers must be greater than 0")
+		}
+		r.numReaders = n
+		return nil
+	}
 }
 
 // Open returns a Reader for a file written by a Writer.
-func Open(p string) (Reader, error) {
+func Open(p string, options ...OpenOption) (Reader, error) {
 	f, err := os.Open(p)
 	if err != nil {
 		return nil, err
@@ -357,8 +367,32 @@ func Open(p string) (Reader, error) {
 	}
 
 	kv := make(map[string][]value, h.num)
+	r := &reader{index: kv, header: h, numReaders: 10}
+	for _, o := range options {
+		if err := o(r); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+	readers := make(chan *os.File, r.numReaders)
+	r.readers = readers
+	r.readers <- f
+	for i := 0; i < r.numReaders-1; i++ {
+		f, err := os.Open(p)
+		if err != nil {
+			for {
+				select {
+				case f := <-r.readers:
+					f.Close()
+				default:
+					return nil, err
+				}
+			}
+			return nil, err
+		}
+		r.readers <- f
+	}
 
-	r := &reader{index: kv, file: f, header: h}
 	if err := r.doCache(); err != nil {
 		return nil, err
 	}
@@ -371,7 +405,12 @@ func (r *reader) doCache() error {
 
 	var dOff, dLen, kLen int64
 
-	read := bufio.NewReaderSize(r.file, 64*1024*1024)
+	f := <-r.readers
+	defer func() {
+		r.readers <- f
+	}()
+
+	read := bufio.NewReaderSize(f, 64*1024*1024)
 
 	// Read the index data into a map.
 	for i := int64(0); i < r.header.num; i++ {
@@ -409,16 +448,13 @@ func (r *reader) doCache() error {
 // Exists returns true if the key exists in the index. There may be multiple entries.
 // This prevents a disk read for key lookups vs using a Read() and checking for ErrKeyNotFound.
 func (r *reader) Exists(key []byte) bool {
-	r.Lock()
-	defer r.Unlock()
-
 	k := byteSlice2String(key)
 	_, ok := r.index[k]
 	return ok
 }
 
 // Keys returns all the keys in the map. There are no disk reads for this operation.
-// Changing the returned []byte will change the underlying data, don't do it.
+// Changing the returned []byte will change the underlying data in the index, don't do it.
 func (r *reader) Keys(ctx context.Context) chan []byte {
 	ch := make(chan []byte, 1)
 	go func() {
@@ -438,9 +474,6 @@ func (r *reader) Keys(ctx context.Context) chan []byte {
 
 // Read implements Reader.Read().
 func (r *reader) Read(k []byte) ([]byte, error) {
-	r.Lock()
-	defer r.Unlock()
-
 	return r.read(k)
 }
 
@@ -452,17 +485,14 @@ func (r *reader) read(k []byte) ([]byte, error) {
 	// If there are multiple values with the same key, only return the last one.
 	v := vals[len(vals)-1]
 
+	f := <-r.readers
+	defer func() {
+		r.readers <- f
+	}()
+
 	b := make([]byte, v.length)
-
-	/*
-		_, err := r.mmap.ReadAt(b, v.offset)
-		if err != nil {
-			return nil, fmt.Errorf("error reading value from file: %q", err)
-		}
-	*/
-
-	r.file.Seek(v.offset, 0)
-	_, err := r.file.Read(b)
+	f.Seek(v.offset, 0)
+	_, err := f.Read(b)
 	if err != nil {
 		return nil, fmt.Errorf("error reading value from file: %q", err)
 	}
@@ -472,19 +502,21 @@ func (r *reader) read(k []byte) ([]byte, error) {
 
 // ReadAll implements Reader.ReadAll().
 func (r *reader) ReadAll(k []byte) ([][]byte, error) {
-	r.Lock()
-	defer r.Unlock()
-
 	vals, ok := r.index[byteSlice2String(k)]
 	if !ok {
 		return nil, nil
 	}
 
+	f := <-r.readers
+	defer func() {
+		r.readers <- f
+	}()
+
 	sl := make([][]byte, 0, len(vals))
 	for _, v := range vals {
 		b := make([]byte, v.length)
-		r.file.Seek(v.offset, 0)
-		_, err := r.file.Read(b)
+		f.Seek(v.offset, 0)
+		_, err := f.Read(b)
 		if err != nil {
 			return nil, fmt.Errorf("error reading value from file: %q", err)
 		}
@@ -493,30 +525,38 @@ func (r *reader) ReadAll(k []byte) ([][]byte, error) {
 	return sl, nil
 }
 
-// Range implements Reader.Range().
+// Range implements Reader.Range(). This does not guarantee order.
 func (r *reader) Range(ctx context.Context) chan KeyValue {
-	r.Lock()
-	defer r.Unlock()
-
-	ch := make(chan KeyValue, 10)
+	ch := make(chan KeyValue, r.numReaders)
 
 	go func() {
 		defer close(ch)
 
+		wg := sync.WaitGroup{}
+		limit := make(chan struct{}, r.numReaders)
 		for k := range r.index {
-			v, err := r.read(UnsafeGetBytes(k))
-			if err != nil {
-				ch <- KeyValue{Err: fmt.Errorf("key %q had no data associated with it (this is bad!): %q", k, err)}
-				return
-			}
+			k := k
+			wg.Add(1)
+			limit <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-limit }()
 
-			select {
-			case ch <- KeyValue{Key: UnsafeGetBytes(k), Value: v}:
-				// Do nothing.
-			case <-ctx.Done():
-				return
-			}
+				v, err := r.read(UnsafeGetBytes(k))
+				if err != nil {
+					ch <- KeyValue{Err: fmt.Errorf("key %q had no data associated with it (this is bad!): %q", k, err)}
+					return
+				}
+
+				select {
+				case ch <- KeyValue{Key: UnsafeGetBytes(k), Value: v}:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}()
 		}
+		wg.Wait()
 	}()
 
 	return ch
@@ -524,7 +564,15 @@ func (r *reader) Range(ctx context.Context) chan KeyValue {
 
 // Close implements Reader.Close().
 func (r *reader) Close() error {
-	return r.file.Close()
+	defer close(r.readers)
+	for {
+		select {
+		case f := <-r.readers:
+			f.Close()
+		default:
+			return nil
+		}
+	}
 }
 
 // UnsafeGetBytes retrieves the underlying []byte held in string "s" without doing
