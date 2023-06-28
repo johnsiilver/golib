@@ -1,6 +1,6 @@
 //go:build linux
 
-package v0
+package file_v0
 
 import (
 	"bufio"
@@ -11,9 +11,9 @@ import (
 	"github.com/brk0v/directio"
 )
 
-// New returns a new Writer that writes to file "p".
-func New(p string) (Writer, error) {
-	f, err := os.OpenFile(p, os.O_CREATE+os.O_WRONLY+syscall.O_DIRECT, 0666)
+// New is the constructor for Writer.
+func New(fpath string, options ...WriteOption) (*Writer, error) {
+	f, err := os.OpenFile(fpath, os.O_CREATE+os.O_WRONLY+syscall.O_DIRECT, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -30,13 +30,17 @@ func New(p string) (Writer, error) {
 		return nil, err
 	}
 
-	return &writer{
-		name:   p,
+	wr := &Writer{
+		name:   fpath,
 		file:   f,
-		dio:    dio,
 		buf:    w,
+		dio:    dio,
 		offset: reservedHeader,
 		index:  make(index, 0, 1000),
-		Mutex:  sync.Mutex{},
-	}, nil
+		mu:     sync.Mutex{},
+	}
+	for _, option := range options {
+		option(wr)
+	}
+	return wr, nil
 }

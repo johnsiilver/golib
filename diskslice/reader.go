@@ -25,7 +25,7 @@ type Reader struct {
 
 	file *os.File
 
-	v0 *v0.Reader
+	file_v0 *file_v0.Reader
 }
 
 // ReadOption is an option to the Open() constructor.
@@ -67,18 +67,18 @@ func Open(fpath string, options ...ReadOption) (*Reader, error) {
 	if h.version == 0 {
 		f.Close()
 
-		voOpts := []v0.ReadOption{}
+		voOpts := []file_v0.ReadOption{}
 		if r.interceptor != nil {
-			voOpts = append(voOpts, v0.ReadIntercept(r.interceptor))
+			voOpts = append(voOpts, file_v0.ReadIntercept(r.interceptor))
 		}
 		if r.cacheIndex {
-			voOpts = append(voOpts, v0.CacheIndex())
+			voOpts = append(voOpts, file_v0.CacheIndex())
 		}
-		vr, err := v0.Open(fpath, voOpts...)
+		vr, err := file_v0.Open(fpath, voOpts...)
 		if err != nil {
 			return nil, err
 		}
-		r.v0 = vr
+		r.file_v0 = vr
 	}
 
 	if r.cacheIndex {
@@ -102,8 +102,8 @@ var readerPool = sync.Pool{
 
 // Read reads data at index i.
 func (r *Reader) Read(i int) ([]byte, error) {
-	if r.v0 != nil {
-		return r.v0.Read(i)
+	if r.file_v0 != nil {
+		return r.file_v0.Read(i)
 	}
 
 	if i < 0 || i >= int(r.header.num) {
@@ -205,7 +205,7 @@ func (r *Reader) findOffset(i int) (dataOffset int64, err error) {
 }
 
 // Value is a value returned by Range.
-type Value = v0.Value
+type Value = file_v0.Value
 
 type rangeOptions struct {
 	buffSize int
@@ -231,8 +231,8 @@ func WithReadBuffer(buffSize int) RangeOption {
 // check the context for an error if a deadline set or cancel is used on a Context in order to know
 // if you received all values.
 func (r *Reader) Range(ctx context.Context, start, end int, options ...RangeOption) chan Value {
-	if r.v0 != nil {
-		return r.v0.Range(ctx, start, end)
+	if r.file_v0 != nil {
+		return r.file_v0.Range(ctx, start, end)
 	}
 	opts := rangeOptions{}
 	for _, o := range options {

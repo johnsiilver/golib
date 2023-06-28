@@ -17,12 +17,12 @@ func New(fpath string, options ...WriteOption) (*Writer, error) {
 		option(wr)
 	}
 	if wr.useV0 {
-		v0Options := make([]v0.WriteOption, 0, len(options))
+		v0Options := make([]file_v0.WriteOption, 0, len(options))
 		if wr.interceptor != nil {
-			v0Options = append(v0Options, v0.WriteIntercept(wr.interceptor))
+			v0Options = append(v0Options, file_v0.WriteIntercept(wr.interceptor))
 		}
 		var err error
-		wr.v0, err = v0.New(fpath, v0Options...)
+		wr.v0, err = file_v0.New(fpath, v0Options...)
 		if err != nil {
 			return nil, err
 		}

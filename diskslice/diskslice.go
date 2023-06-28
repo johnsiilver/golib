@@ -133,7 +133,7 @@ type Writer struct {
 	mu       sync.Mutex
 
 	useV0       bool
-	v0          *v0.Writer
+	v0          *file_v0.Writer
 	interceptor func(dst io.Writer) io.WriteCloser
 }
 
