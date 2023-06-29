@@ -531,6 +531,7 @@ func (r *reader) Range(ctx context.Context) chan KeyValue {
 		var read *os.File
 		select {
 		case read = <-r.readers:
+			defer func() { r.readers <- read }()
 		case <-ctx.Done():
 			ch <- KeyValue{Err: ctx.Err()}
 			return
