@@ -100,7 +100,7 @@ func TestRange(t *testing.T) {
 		lookingFor[int(kv.Key[0])] = true
 		i++
 	}
-	log.Println("here?")
+
 	if i != 200 {
 		t.Fatalf("TestRange: expected %d keys, found %d", 200, i)
 	}

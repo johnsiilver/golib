@@ -96,6 +96,7 @@ import (
 	"unsafe"
 
 	"github.com/brk0v/directio"
+	"github.com/johnsiilver/golib/diskmap/internal/ordered"
 )
 
 // reservedHeader is the size, IN BYTES, of the reserved header portion of the file.
@@ -146,14 +147,14 @@ type Writer interface {
 
 // KeyValue holds a key/value pair.
 type KeyValue struct {
+	// Err indicates that there was an error in the return stream.
+	Err error
+
 	// Key is the key the value was stored at.
 	Key []byte
 
 	// Value is the value stored at Key.
 	Value []byte
-
-	// Err indicates that there was an error in the return stream.
-	Err error
 }
 
 // table is a list of entries that are eventually encoded onto disk at the end of the file.
@@ -330,7 +331,7 @@ type reader struct {
 	header header
 
 	// index is the key to offset data mapping.
-	index map[string][]value
+	index *ordered.Map[string, []value]
 
 	numReaders int
 	readers    chan *os.File
@@ -366,7 +367,7 @@ func Open(p string, options ...OpenOption) (Reader, error) {
 		return nil, fmt.Errorf("cannot seek to index offset: %q", err)
 	}
 
-	kv := make(map[string][]value, h.num)
+	kv := ordered.New[string, []value]()
 	r := &reader{index: kv, header: h, numReaders: 10}
 	for _, o := range options {
 		if err := o(r); err != nil {
@@ -388,7 +389,6 @@ func Open(p string, options ...OpenOption) (Reader, error) {
 					return nil, err
 				}
 			}
-			return nil, err
 		}
 		r.readers <- f
 	}
@@ -401,8 +401,6 @@ func Open(p string, options ...OpenOption) (Reader, error) {
 }
 
 func (r *reader) doCache() error {
-	kv := make(map[string][]value, r.header.num)
-
 	var dOff, dLen, kLen int64
 
 	f := <-r.readers
@@ -433,15 +431,14 @@ func (r *reader) doCache() error {
 		}
 
 		strKey := byteSlice2String(key)
-		if sl, ok := kv[strKey]; ok {
+		if sl, ok := r.index.Get(strKey); ok {
 			sl = append(sl, value{offset: dOff, length: dLen})
-			kv[strKey] = sl
+			r.index.Set(strKey, sl)
 			continue
 		}
 
-		kv[string(key)] = []value{{offset: dOff, length: dLen}}
+		r.index.Set(string(key), []value{{offset: dOff, length: dLen}})
 	}
-	r.index = kv
 	return nil
 }
 
@@ -449,7 +446,7 @@ func (r *reader) doCache() error {
 // This prevents a disk read for key lookups vs using a Read() and checking for ErrKeyNotFound.
 func (r *reader) Exists(key []byte) bool {
 	k := byteSlice2String(key)
-	_, ok := r.index[k]
+	_, ok := r.index.Get(k)
 	return ok
 }
 
@@ -459,8 +456,8 @@ func (r *reader) Keys(ctx context.Context) chan []byte {
 	ch := make(chan []byte, 1)
 	go func() {
 		defer close(ch)
-		for k := range r.index {
-			kk := UnsafeGetBytes(k)
+		for kv := range r.index.Range(ctx) {
+			kk := UnsafeGetBytes(kv.Key)
 			select {
 			case <-ctx.Done():
 				return
@@ -478,7 +475,7 @@ func (r *reader) Read(k []byte) ([]byte, error) {
 }
 
 func (r *reader) read(k []byte) ([]byte, error) {
-	vals, ok := r.index[byteSlice2String(k)]
+	vals, ok := r.index.Get(byteSlice2String(k))
 	if !ok {
 		return nil, ErrKeyNotFound
 	}
@@ -502,7 +499,7 @@ func (r *reader) read(k []byte) ([]byte, error) {
 
 // ReadAll implements Reader.ReadAll().
 func (r *reader) ReadAll(k []byte) ([][]byte, error) {
-	vals, ok := r.index[byteSlice2String(k)]
+	vals, ok := r.index.Get(byteSlice2String(k))
 	if !ok {
 		return nil, nil
 	}
@@ -528,35 +525,41 @@ func (r *reader) ReadAll(k []byte) ([][]byte, error) {
 // Range implements Reader.Range(). This does not guarantee order.
 func (r *reader) Range(ctx context.Context) chan KeyValue {
 	ch := make(chan KeyValue, r.numReaders)
-
 	go func() {
 		defer close(ch)
 
-		wg := sync.WaitGroup{}
-		limit := make(chan struct{}, r.numReaders)
-		for k := range r.index {
-			k := k
-			wg.Add(1)
-			limit <- struct{}{}
-			go func() {
-				defer wg.Done()
-				defer func() { <-limit }()
-
-				v, err := r.read(UnsafeGetBytes(k))
-				if err != nil {
-					ch <- KeyValue{Err: fmt.Errorf("key %q had no data associated with it (this is bad!): %q", k, err)}
-					return
-				}
-
-				select {
-				case ch <- KeyValue{Key: UnsafeGetBytes(k), Value: v}:
-					return
-				case <-ctx.Done():
-					return
-				}
-			}()
+		var read *os.File
+		select {
+		case read = <-r.readers:
+		case <-ctx.Done():
+			ch <- KeyValue{Err: ctx.Err()}
+			return
 		}
-		wg.Wait()
+		_, start := r.index.Oldest()
+		_, err := read.Seek(start[0].offset, 0)
+		if err != nil {
+			ch <- KeyValue{Err: fmt.Errorf("error seeking to start of data: %q", err)}
+			return
+		}
+
+		buff := bufio.NewReaderSize(read, 64*1024*1024)
+
+		for kv := range r.index.Range(ctx) {
+			for _, v := range kv.Value {
+				b := make([]byte, v.length)
+				_, err := io.ReadFull(buff, b)
+				if err != nil {
+					ch <- KeyValue{Err: fmt.Errorf("error reading value from file: %q", err)}
+					return
+				}
+				select {
+				case ch <- KeyValue{Key: UnsafeGetBytes(kv.Key), Value: b}:
+				case <-ctx.Done():
+					ch <- KeyValue{Err: ctx.Err()}
+					return
+				}
+			}
+		}
 	}()
 
 	return ch
