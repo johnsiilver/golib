@@ -263,6 +263,10 @@ func Open(fpath string, options ...ReadOption) (*Reader, error) {
 	return r, nil
 }
 
+func (r *Reader) Close() error {
+	return r.file.Close()
+}
+
 // Len returns the number of entries in the array.
 func (r *Reader) Len() int {
 	return int(r.len)

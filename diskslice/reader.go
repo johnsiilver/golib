@@ -16,14 +16,13 @@ import (
 // Reader provides a reader for our diskslice.
 type Reader struct {
 	header header
-	mu     sync.Mutex
 
 	interceptor func(src io.Reader) io.ReadCloser
 
 	cacheIndex bool
 	indexCache []int64
 
-	file *os.File
+	readers chan *os.File
 
 	file_v0 *file_v0.Reader
 }
@@ -59,7 +58,7 @@ func Open(fpath string, options ...ReadOption) (*Reader, error) {
 		return nil, err
 	}
 
-	r := &Reader{header: h, file: f}
+	r := &Reader{header: h}
 	for _, option := range options {
 		option(r)
 	}
@@ -79,12 +78,32 @@ func Open(fpath string, options ...ReadOption) (*Reader, error) {
 			return nil, err
 		}
 		r.file_v0 = vr
+		return r, nil
 	}
 
 	if r.cacheIndex {
-		r.cacheOffsets()
+		r.cacheOffsets(f)
 	}
+
+	ch := make(chan *os.File, 10)
+	r.readers = ch
+	ch <- f
+	for i := 0; i < 9; i++ {
+		f, err := os.Open(fpath)
+		if err != nil {
+			return nil, err
+		}
+		ch <- f
+	}
+
 	return r, nil
+}
+
+func (r *Reader) Close() error {
+	for f := range r.readers {
+		f.Close()
+	}
+	return nil
 }
 
 // Len returns the number of entries in the array.
@@ -110,31 +129,33 @@ func (r *Reader) Read(i int) ([]byte, error) {
 		return nil, fmt.Errorf("index out of bounds")
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	f := <-r.readers
+	defer func() {
+		r.readers <- f
+	}()
 
 	var b []byte
 
 	var dataOffset int64
 
-	dataOffset, err := r.findOffset(i)
+	dataOffset, err := r.findOffset(i, f)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := r.file.Seek(dataOffset, 0); err != nil {
+	if _, err := f.Seek(dataOffset, 0); err != nil {
 		return nil, fmt.Errorf("cannot reach offset for index: %s", err)
 	}
 
 	// This gets the length of the data.
 	var dataLen int64
-	if err := binary.Read(r.file, endian, &dataLen); err != nil {
+	if err := binary.Read(f, endian, &dataLen); err != nil {
 		return nil, fmt.Errorf("cannot read a data length for entry(%d): %s", i, err)
 	}
 
 	// This reads the data.
 	b = make([]byte, dataLen)
-	if _, err := r.file.Read(b); err != nil {
+	if _, err := f.Read(b); err != nil {
 		return nil, fmt.Errorf("error reading value from file: %s", err)
 	}
 
@@ -164,11 +185,8 @@ func (r *Reader) handleInterceptor(b []byte) ([]byte, error) {
 }
 
 // cacheOffsets reads all the offsets from the file and stores them.
-func (r *Reader) cacheOffsets() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, err := r.file.Seek(r.header.indexOffset, 0); err != nil {
+func (r *Reader) cacheOffsets(f *os.File) error {
+	if _, err := f.Seek(r.header.indexOffset, 0); err != nil {
 		return fmt.Errorf("cannot reach offset for key supplied by the index: %q", err)
 	}
 
@@ -176,7 +194,7 @@ func (r *Reader) cacheOffsets() error {
 
 	var dataOffset int64
 	for i := 0; i < r.Len(); i++ {
-		if err := binary.Read(r.file, endian, &dataOffset); err != nil {
+		if err := binary.Read(f, endian, &dataOffset); err != nil {
 			return fmt.Errorf("cannot read a data offset in index: %s", err)
 		}
 		offsets[i] = dataOffset
@@ -187,17 +205,17 @@ func (r *Reader) cacheOffsets() error {
 }
 
 // findOffset will find the offset the data at index i.
-func (r *Reader) findOffset(i int) (dataOffset int64, err error) {
+func (r *Reader) findOffset(i int, f *os.File) (dataOffset int64, err error) {
 	if r.cacheIndex {
 		return r.indexCache[i], nil
 	}
 
 	// We do not have an index that is storing our offsets.
 	offset := r.header.indexOffset + (int64(i) * entryLen)
-	if _, err := r.file.Seek(offset, 0); err != nil {
+	if _, err := f.Seek(offset, 0); err != nil {
 		return 0, fmt.Errorf("cannot reach offset for key supplied by the index: %s", err)
 	}
-	if err := binary.Read(r.file, endian, &dataOffset); err != nil {
+	if err := binary.Read(f, endian, &dataOffset); err != nil {
 		return 0, fmt.Errorf("cannot read a data offset in index: %s", err)
 	}
 
@@ -241,9 +259,6 @@ func (r *Reader) Range(ctx context.Context, start, end int, options ...RangeOpti
 
 	ch := make(chan Value, 1)
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	if start < 0 {
 		ch <- Value{Err: fmt.Errorf("Reader.Range() cannot have start value < 0")}
 		close(ch)
@@ -260,23 +275,30 @@ func (r *Reader) Range(ctx context.Context, start, end int, options ...RangeOpti
 		end = r.Len()
 	}
 
-	initialOffset, err := r.findOffset(start)
+	f := <-r.readers
+
+	initialOffset, err := r.findOffset(start, f)
 	if err != nil {
+		r.readers <- f
 		ch <- Value{Err: fmt.Errorf("Reader.Range() could not find offset for starting value: %w", err)}
 		close(ch)
 		return ch
 	}
 
-	if _, err := r.file.Seek(initialOffset, 0); err != nil {
+	if _, err := f.Seek(initialOffset, 0); err != nil {
+		r.readers <- f
 		ch <- Value{Err: fmt.Errorf("Reader.Range() could not seek to start of data: %w", err)}
 		close(ch)
 		return ch
 	}
 
-	var buff = bufio.NewReaderSize(r.file, opts.buffSize)
+	var buff = bufio.NewReaderSize(f, opts.buffSize)
 
 	go func() {
 		defer close(ch)
+		defer func() {
+			r.readers <- f
+		}()
 		for i := start; i < end; i++ {
 			v, err := r.getNextEntry(buff, i)
 			if err != nil {
