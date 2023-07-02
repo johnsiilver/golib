@@ -222,6 +222,28 @@ func (h *header) write(f io.Writer) error {
 	return nil
 }
 
+type writerOptions struct {
+	bufferSize int
+}
+
+func (w writerOptions) defaults() writerOptions {
+	if w.bufferSize == 0 {
+		w.bufferSize = 67108864
+	}
+	return w
+}
+
+// WriterOption is an option for New().
+type WriterOption func(writerOptions) (writerOptions, error)
+
+// WithBufferSize sets the buffer size for the Writer.  The default is 64MB.
+func WithBufferSize(size int) WriterOption {
+	return func(o writerOptions) (writerOptions, error) {
+		o.bufferSize = size
+		return o, nil
+	}
+}
+
 // writer implements Writer.
 type writer struct {
 	header header
@@ -295,14 +317,18 @@ func (w *writer) Close() error {
 	}
 	if w.buf != nil {
 		w.buf.Flush()
-		w.dio.Flush()
-
-		w.file.Close()
-		f, err := os.OpenFile(w.name, os.O_RDWR, 0666)
-		if err != nil {
-			return err
+		if w.dio != nil {
+			w.dio.Flush()
 		}
-		w.file = f
+
+		if w.dio != nil {
+			w.file.Close()
+			f, err := os.OpenFile(w.name, os.O_RDWR, 0666)
+			if err != nil {
+				return err
+			}
+			w.file = f
+		}
 	}
 
 	// Now that we've written all our data to the end of the file, we can go back to our reserved header

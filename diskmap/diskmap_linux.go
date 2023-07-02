@@ -12,7 +12,17 @@ import (
 )
 
 // New returns a new Writer that writes to file "p".
-func New(p string) (Writer, error) {
+func New(p string, options ...WriterOption) (Writer, error) {
+	wo := writerOptions{}
+	wo = wo.defaults()
+	var err error
+	for _, o := range options {
+		wo, err = o(wo)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	f, err := os.OpenFile(p, os.O_CREATE+os.O_WRONLY+syscall.O_DIRECT, 0666)
 	if err != nil {
 		return nil, err
@@ -23,7 +33,7 @@ func New(p string) (Writer, error) {
 		return nil, err
 	}
 
-	w := bufio.NewWriterSize(dio, 67108864)
+	w := bufio.NewWriterSize(dio, wo.bufferSize)
 	header := [64]byte{}
 	_, err = w.Write(header[:])
 	if err != nil {
