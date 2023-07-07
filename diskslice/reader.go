@@ -100,6 +100,10 @@ func Open(fpath string, options ...ReadOption) (*Reader, error) {
 }
 
 func (r *Reader) Close() error {
+	if r.file_v0 != nil {
+		return r.file_v0.Close()
+	}
+
 	for f := range r.readers {
 		f.Close()
 	}
@@ -108,6 +112,9 @@ func (r *Reader) Close() error {
 
 // Len returns the number of entries in the array.
 func (r *Reader) Len() int {
+	if r.file_v0 != nil {
+		return r.file_v0.Len()
+	}
 	return int(r.header.num)
 }
 
