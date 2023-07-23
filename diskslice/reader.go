@@ -104,6 +104,7 @@ func (r *Reader) Close() error {
 		return r.file_v0.Close()
 	}
 
+	close(r.readers)
 	for f := range r.readers {
 		f.Close()
 	}
