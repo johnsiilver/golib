@@ -15,6 +15,9 @@ import (
 // All lookups are done against an ordered in-memory map. Altering data that
 // is returned with alter it in the map, which is unsafe. All data should be
 // copied before altering. Use Clone() for this.
+// Note that this uses about 2x the amount of memory as the diskmap on disk during
+// the OpenInMemory() call and the size of data + 2x keyspace to maintain the
+// ordered map.
 func OpenInMemory(p string) (Reader, error) {
 	entireFile, err := os.ReadFile(p)
 	if err != nil {
