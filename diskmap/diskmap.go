@@ -141,6 +141,9 @@ type Writer interface {
 	// Write writes a key/value pair to disk.  Thread-safe.
 	Write(k, v []byte) error
 
+	// Exists returns true if the key exists in the diskmap. Thread-safe.
+	Exists(key []byte) bool
+
 	// Close syncronizes the file to disk and closes it.
 	Close() error
 }
@@ -157,19 +160,17 @@ type KeyValue struct {
 	Value []byte
 }
 
-// table is a list of entries that are eventually encoded onto disk at the end of the file.
+// index is a list of entries that are eventually encoded onto disk at the end of the file.
 type index []entry
 
 // entry is an entry in the index to allow locating data associated with a key.
 type entry struct {
-	// offset is the offset from the start of the file to locate the value associated with key.
-	offset int64
-
-	// length is the length of the data from offset above.
-	length int64
-
 	// key is the key part of the key/value pair.
 	key []byte
+	// offset is the offset from the start of the file to locate the value associated with key.
+	offset int64
+	// length is the length of the data from offset above.
+	length int64
 }
 
 // value holds the data needed to locate a value of a key/value pair on disk.
@@ -184,9 +185,9 @@ type value struct {
 type header struct {
 	// indexOffset is the offset from the start of the file to the start of the index.
 	indexOffset int64
-	// num is the number of entries in the diskslice.
+	// num is the number of entries in the diskmap.
 	num int64
-	// version is the version of the diskslice data format.
+	// version is the version of the diskmap data format.
 	version float32 // only set when reading, not used in writing
 }
 
@@ -246,14 +247,15 @@ func WithBufferSize(size int) WriterOption {
 
 // writer implements Writer.
 type writer struct {
-	header header
-	name   string
-	file   *os.File
-	dio    *directio.DirectIO
-	buf    *bufio.Writer
-	index  index
-	offset int64
-	num    int64
+	header   header
+	name     string
+	file     *os.File
+	dio      *directio.DirectIO
+	buf      *bufio.Writer
+	index    index
+	indexMap map[string]struct{}
+	offset   int64
+	num      int64
 	sync.Mutex
 }
 
@@ -281,11 +283,21 @@ func (w *writer) Write(k, v []byte) error {
 			length: int64(len(v)),
 		},
 	)
+	w.indexMap[byteSlice2String(k)] = struct{}{}
 
 	w.offset += int64(len(v))
 	w.num += 1
 
 	return nil
+}
+
+// Exists checks if key k has been written.
+func (w *writer) Exists(k []byte) bool {
+	w.Lock()
+	defer w.Unlock()
+
+	_, ok := w.indexMap[byteSlice2String(k)]
+	return ok
 }
 
 // Close implements Writer.Close().

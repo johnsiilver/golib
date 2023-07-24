@@ -41,6 +41,7 @@ func New(p string, options ...WriterOption) (Writer, error) {
 		buf:    w,
 		offset: reservedHeader,
 		index:  make(index, 0, 1000),
+		indexMap: map[string]struct{}{},
 		Mutex:  sync.Mutex{},
 	}, nil
 }

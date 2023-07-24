@@ -3,7 +3,6 @@ package diskmap
 import (
 	"bytes"
 	"context"
-	"log"
 	"math/rand"
 	"os"
 	"path"
@@ -45,25 +44,34 @@ func TestDiskMap(t *testing.T) {
 		t.Fatalf("error closing the Writer: %q", err)
 	}
 
-	r, err := Open(p)
+	diskReader, err := Open(p)
 	if err != nil {
-		t.Fatalf("error opening diskmap %q", err)
+		t.Fatalf("error opening diskmap(%q) with diskReader", err)
 	}
+	defer diskReader.Close()
 
-	for k, v := range data {
-		val, err := r.Read([]byte(k))
-		if err != nil {
-			t.Errorf("a key/value pair was lost: %q", err)
-			continue
+	memReader, err := OpenInMemory(p)
+	if err != nil {
+		t.Fatalf("error opening diskmap(%q) with memReader", err)
+	}
+	defer memReader.Close()
+
+	for _, r := range []Reader{diskReader, memReader} {
+		for k, v := range data {
+			val, err := r.Read([]byte(k))
+			if err != nil {
+				t.Errorf("a key/value pair was lost: %q", err)
+				continue
+			}
+
+			if !bytes.Equal(val, v) {
+				t.Errorf("a value was not correctly stored")
+			}
 		}
 
-		if !bytes.Equal(val, v) {
-			t.Errorf("a value was not correctly stored")
+		if _, err := r.Read([]byte("helloworld")); err == nil {
+			t.Errorf("a non-existant key passed to Read() did not return an error")
 		}
-	}
-
-	if _, err := r.Read([]byte("helloworld")); err == nil {
-		t.Errorf("a non-existant key passed to Read() did not return an error")
 	}
 }
 
@@ -83,30 +91,35 @@ func TestRange(t *testing.T) {
 	}
 	w.Close()
 
-	r, err := Open(p)
+	diskReader, err := Open(p)
 	if err != nil {
-		panic(err)
+		t.Fatalf("error opening diskmap(%q) with diskReader", err)
 	}
-	defer func() {
-		log.Println("before r.Close()")
-		r.Close()
-		log.Println("got past r.Close()")
-	}()
+	defer diskReader.Close()
 
-	lookingFor := make([]bool, 200)
-
-	i := byte(0)
-	for kv := range r.Range(context.Background()) {
-		lookingFor[int(kv.Key[0])] = true
-		i++
+	memReader, err := OpenInMemory(p)
+	if err != nil {
+		t.Fatalf("error opening diskmap(%q) with memReader", err)
 	}
+	defer memReader.Close()
 
-	if i != 200 {
-		t.Fatalf("TestRange: expected %d keys, found %d", 200, i)
-	}
-	for x, found := range lookingFor {
-		if !found {
-			t.Errorf("TestRange: key(%d) was not found", x)
+	for _, r := range []Reader{diskReader, memReader} {
+
+		lookingFor := make([]bool, 200)
+
+		i := byte(0)
+		for kv := range r.Range(context.Background()) {
+			lookingFor[int(kv.Key[0])] = true
+			i++
+		}
+
+		if i != 200 {
+			t.Fatalf("TestRange: expected %d keys, found %d", 200, i)
+		}
+		for x, found := range lookingFor {
+			if !found {
+				t.Errorf("TestRange: key(%d) was not found", x)
+			}
 		}
 	}
 }
@@ -140,30 +153,46 @@ func TestDiskMapDuplicateKeys(t *testing.T) {
 
 	w.Close()
 
-	r, err := Open(p)
+	diskReader, err := Open(p)
 	if err != nil {
-		t.Fatalf("error opening diskmap %q", err)
+		t.Fatalf("error opening diskmap(%q) with diskReader", err)
 	}
+	defer diskReader.Close()
 
-	got, err := r.Read(dupKey)
+	memReader, err := OpenInMemory(p)
 	if err != nil {
-		t.Fatalf("TestDiskMapDuplicateKeys(r.Read()): got err == %s, want err == nil", err)
+		t.Fatalf("error opening diskmap(%q) with memReader", err)
 	}
-	if !bytes.Equal(got, dupData1) {
-		t.Fatalf("TestDiskMapDuplicateKeys(r.Read()): got incorrect data")
-	}
+	defer memReader.Close()
 
-	gotBatch, err := r.ReadAll(dupKey)
-	if err != nil {
-		t.Fatalf("TestDiskMapDuplicateKeys(r.ReadAll()): got err == %s, want err == nil", err)
-	}
-	if len(gotBatch) != 2 {
-		t.Fatalf("TestDiskMapDuplicateKeys(r.ReadAll()): got %d return values, want %d", len(gotBatch), 2)
-	}
-	want := [][]byte{dupData0, dupData1}
-	for i := 0; i < len(gotBatch); i++ {
-		if !bytes.Equal(gotBatch[i], want[i]) {
-			t.Fatalf("TestDiskMapDuplicateKeys(r.ReadAll()): returned value %d was incorrect", i)
+	for i, r := range []Reader{diskReader, memReader} {
+		readerType := ""
+		if i == 0 {
+			readerType = "diskReader"
+		} else {
+			readerType = "memReader"
+		}
+
+		got, err := r.Read(dupKey)
+		if err != nil {
+			t.Fatalf("TestDiskMapDuplicateKeys[%s](r.Read(%s)): got err == %s, want err == nil", readerType, dupKey, err)
+		}
+		if !bytes.Equal(got, dupData1) {
+			t.Fatalf("TestDiskMapDuplicateKeys[%s](r.Read(%s)): got incorrect data(%s), want data(%s)", readerType, dupKey, got, dupData1)
+		}
+
+		gotBatch, err := r.ReadAll(dupKey)
+		if err != nil {
+			t.Fatalf("TestDiskMapDuplicateKeys[%s](r.ReadAll()): got err == %s, want err == nil", readerType, err)
+		}
+		if len(gotBatch) != 2 {
+			t.Fatalf("TestDiskMapDuplicateKeys[%s](r.ReadAll()): got %d return values, want %d", readerType, len(gotBatch), 2)
+		}
+		want := [][]byte{dupData0, dupData1}
+		for i := 0; i < len(gotBatch); i++ {
+			if !bytes.Equal(gotBatch[i], want[i]) {
+				t.Fatalf("TestDiskMapDuplicateKeys[%s](r.ReadAll()): returned value %d was incorrect", readerType, i)
+			}
 		}
 	}
 }
@@ -199,6 +228,29 @@ func BenchmarkDiskMapRead(b *testing.B) {
 	p := `/var/folders/rd/hbhb8s197633_f8ncy6fmpqr0000gn/T/diskmapV0.map`
 
 	r, err := Open(p, WithNumReaders(10))
+	if err != nil {
+		panic(err)
+	}
+
+	b.ResetTimer()
+	count := 0
+	for v := range r.Range(context.Background()) {
+		if v.Err != nil {
+			panic(v.Err)
+		}
+		count++
+	}
+	if count != 1000000 {
+		panic("wrong count")
+	}
+}
+
+func BenchmarkDiskMapMemRead(b *testing.B) {
+	b.ReportAllocs()
+
+	p := `/var/folders/rd/hbhb8s197633_f8ncy6fmpqr0000gn/T/diskmapV0.map`
+
+	r, err := OpenInMemory(p)
 	if err != nil {
 		panic(err)
 	}
