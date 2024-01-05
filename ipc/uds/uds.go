@@ -16,6 +16,7 @@ as io.ReadWriteClose objects. We also provide higher level clients that handle c
 RPC client/server, json streams, json RPC client/server, ..
 
 Unix/Linux Note:
+
 	Socket paths may have a length limit that is different than the normal
 	filesystem. On OSX, you can receive "bind: invalid argument" when the name is too long.
 
@@ -33,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -40,6 +42,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -336,15 +339,35 @@ type Client struct {
 
 // NewClient creates a new UDS client to the socket at socketAddr that must have the uid and gid specified.
 // fileModes provides a list of acceptable file modes that the socket can be in (suggest 0770, 1770).
+// If not specified, 0770 and 1770 are used.
 func NewClient(socketAddr string, uid, gid int, fileModes []os.FileMode) (*Client, error) {
 	stats, err := os.Stat(socketAddr)
 	if err != nil {
 		return nil, fmt.Errorf("could not stat socket address(%s): %w", socketAddr, err)
 	}
 
-	switch stats.Mode() {
-	case 0770, 1770:
-		return nil, fmt.Errorf("socket address(%s) had incorrect mode(%v), must be 0770", socketAddr, stats.Mode())
+	if len(fileModes) > 0 {
+		for _, fileMode := range fileModes {
+			if stats.Mode() == fileMode {
+				goto found
+			}
+		}
+		return nil, fmt.Errorf("socket address(%s) had incorrect mode(%v), must be one of %v", socketAddr, stats.Mode(), fileModes)
+	} else {
+		switch stats.Mode() {
+		case 0o770, 1770:
+			return nil, fmt.Errorf("socket address(%s) had incorrect mode(%v), must be 0770", socketAddr, stats.Mode())
+		}
+	}
+
+found:
+
+	fUID, fGID := getUIDGID(stats)
+	if uid != fUID {
+		return nil, fmt.Errorf("socket address(%s) had incorrect uid(%d), must be %d", socketAddr, fUID, uid)
+	}
+	if gid != fGID {
+		return nil, fmt.Errorf("socket address(%s) had incorrect gid(%d), must be %d", socketAddr, fGID, gid)
 	}
 
 	conn, err := net.Dial("unix", socketAddr)
@@ -354,6 +377,20 @@ func NewClient(socketAddr string, uid, gid int, fileModes []os.FileMode) (*Clien
 	uc := conn.(*net.UnixConn)
 
 	return &Client{conn: uc}, nil
+}
+
+// getUIDGID returns the uid and gid from the fileinfo. This is a helper function to get the uid/gid
+// that only works on Linux/Darwin.
+func getUIDGID(fi fs.FileInfo) (int, int) {
+	var uid, gid int
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+		uid = int(stat.Uid)
+		gid = int(stat.Gid)
+	} else {
+		panic("unable to get uid/gid from fileinfo, non-supported OS?")
+	}
+
+	return uid, gid
 }
 
 // WriteOnly let's the Client know that it will only be used for writing. This will cause a

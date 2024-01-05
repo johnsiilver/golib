@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+option go_package = "github.com/johnsiilver/golib/ipc/uds/highlevel/proto/stream/internal/proto;msg";
+
+// Request a quote from the server.
+message MsgIn {
+    int32 id = 1;
+    bytes data = 2;
+}
+
+// Response for a quote.
+message MsgOut {
+    int32 id = 1;
+    bytes data = 2;
+}
