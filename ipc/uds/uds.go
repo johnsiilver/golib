@@ -346,15 +346,26 @@ func NewClient(socketAddr string, uid, gid int, fileModes []os.FileMode) (*Clien
 		return nil, fmt.Errorf("could not stat socket address(%s): %w", socketAddr, err)
 	}
 
+	socketPerms := stats.Mode()
+	if !isSocket(socketPerms) {
+		return nil, fmt.Errorf("socket address(%s) had incorrect mode(%v), must be a socket", socketAddr, stats.Mode())
+	}
+	// We test without the Socket bit set.
+	socketPerms -= os.ModeSocket
+
 	if len(fileModes) > 0 {
 		for _, fileMode := range fileModes {
-			if stats.Mode() == fileMode {
+			// We test without the Socket bit set.
+			if isSocket(fileMode) {
+				fileMode -= os.ModeSocket
+			}
+			if socketPerms == fileMode {
 				goto found
 			}
 		}
 		return nil, fmt.Errorf("socket address(%s) had incorrect mode(%v), must be one of %v", socketAddr, stats.Mode(), fileModes)
 	} else {
-		switch stats.Mode() {
+		switch socketPerms {
 		case 0o770, 1770:
 			return nil, fmt.Errorf("socket address(%s) had incorrect mode(%v), must be 0770", socketAddr, stats.Mode())
 		}
@@ -488,4 +499,8 @@ func isClosed(conn *net.UnixConn) bool {
 		return true
 	}
 	return false
+}
+
+func isSocket(mode os.FileMode) bool {
+	return mode&os.ModeSocket != 0
 }
