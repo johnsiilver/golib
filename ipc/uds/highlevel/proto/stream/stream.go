@@ -34,16 +34,11 @@ type streamMsg[T any] struct {
 	err error
 }
 
-type promiseMsg[T any] struct {
-	msg T
-	ack chan error
-}
-
 type controlMsg struct {
 	msgType msgType
 }
 
-// Client provides a wrapper around an *uds.Client or *uds.Server that can send and receive JSON messages.
+// Client provides a wrapper around an *uds.Client or *uds.Server that can send and receive PROTO messages.
 type Client struct {
 	ctx    context.Context
 	cancel context.CancelFunc
